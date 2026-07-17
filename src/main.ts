@@ -3,6 +3,7 @@ import { AppModule } from './app.module';
 import { configureApp } from './app.setup';
 
 const DEFAULT_PORT = 4000;
+const DEFAULT_HOST = '127.0.0.1';
 
 function getPort(value: string | undefined): number {
   if (value === undefined) {
@@ -22,7 +23,7 @@ function getPort(value: string | undefined): number {
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule);
   configureApp(app);
-  await app.listen(getPort(process.env.PORT));
+  await app.listen(getPort(process.env.PORT), process.env.HOST ?? DEFAULT_HOST);
 }
 
 void bootstrap();
