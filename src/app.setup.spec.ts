@@ -19,7 +19,7 @@ describe('getWebOrigins', () => {
 describe('getWebOriginPatterns', () => {
   it('parses comma-separated regex patterns', () => {
     const patterns = getWebOriginPatterns(
-      '^https://resume-ai-web(?:-[a-z0-9-]+)?-0xweaksheep[.]vercel[.]app$',
+      '^https://resume-ai-web[a-z0-9-]*[.]vercel[.]app$',
     );
 
     expect(patterns).toHaveLength(1);
@@ -32,7 +32,7 @@ describe('getWebOriginPatterns', () => {
 describe('isWebOriginAllowed', () => {
   const exactOrigins = ['https://resume-ai-web.vercel.app'];
   const originPatterns = getWebOriginPatterns(
-    '^https://resume-ai-web(?:-[a-z0-9-]+)?-0xweaksheep[.]vercel[.]app$',
+    '^https://resume-ai-web[a-z0-9-]*[.]vercel[.]app$',
   );
 
   it('allows requests without browser origin', () => {
@@ -61,10 +61,27 @@ describe('isWebOriginAllowed', () => {
     ).toBe(true);
   });
 
+  it('allows common Vercel generated project origins', () => {
+    expect(
+      isWebOriginAllowed(
+        'https://resume-ai-web-git-main-0xweaksheeps-projects.vercel.app',
+        exactOrigins,
+        originPatterns,
+      ),
+    ).toBe(true);
+    expect(
+      isWebOriginAllowed(
+        'https://resume-ai-web-7s9x4f2a-0xweaksheep.vercel.app',
+        exactOrigins,
+        originPatterns,
+      ),
+    ).toBe(true);
+  });
+
   it('rejects unrelated Vercel origins', () => {
     expect(
       isWebOriginAllowed(
-        'https://resume-ai-web-git-main-unknown.vercel.app',
+        'https://other-resume-ai-web.vercel.app',
         exactOrigins,
         originPatterns,
       ),
