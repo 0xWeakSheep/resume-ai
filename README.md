@@ -31,6 +31,6 @@ npm run start:prod
 | --- | --- | --- |
 | `PORT` | `4000` | API 监听端口 |
 | `HOST` | `127.0.0.1` | API 监听地址；通过反向代理部署时保持本机绑定 |
-| `WEB_ORIGIN` | `http://localhost:3000` | 允许跨域访问的 Web 地址 |
+| `WEB_ORIGIN` | `http://localhost:3000` | 允许跨域访问的 Web 地址，多个地址用逗号分隔 |
 
 后续按照 Linear `A10-9` 继续实现数据模型、任务管线、模型调用与交付后台。
