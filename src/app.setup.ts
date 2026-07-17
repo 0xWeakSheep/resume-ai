@@ -1,4 +1,4 @@
-import type { INestApplication } from '@nestjs/common';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 
 const DEFAULT_WEB_ORIGIN = 'http://localhost:3000';
 
@@ -9,7 +9,9 @@ export function getWebOrigins(value: string | undefined): string[] {
     .filter(Boolean);
 }
 
-export function configureApp(app: INestApplication): void {
+export function configureApp(app: NestExpressApplication): void {
+  app.useBodyParser('json', { limit: '5mb' });
+  app.useBodyParser('urlencoded', { extended: true, limit: '5mb' });
   app.setGlobalPrefix('api/v1');
   app.enableCors({
     origin: getWebOrigins(process.env.WEB_ORIGIN),
