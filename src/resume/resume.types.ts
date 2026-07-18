@@ -170,6 +170,9 @@ export interface RewriteSuggestion {
   reason: string;
   evidence: string;
   sourceFactIds: string[];
+  riskLevel: 'low' | 'medium' | 'high';
+  riskReasons: string[];
+  acceptedByDefault: boolean;
 }
 
 export interface SourceFactReference {

@@ -1230,6 +1230,13 @@ export class ResumeService {
         const after = insertedKeyword
           ? `围绕 ${insertedKeyword}，${this.stripBulletPrefix(bullet)}`
           : this.stripBulletPrefix(bullet);
+        const sourceFactIds = this.findSourceFactIdsForText(factBase, bullet);
+        const risk = this.assessRewriteRisk(
+          bullet,
+          after,
+          sourceFactIds,
+          insertedKeyword,
+        );
 
         return {
           before: bullet,
@@ -1238,7 +1245,8 @@ export class ResumeService {
             ? `补齐目标 JD 中的 ${insertedKeyword} 表达，但只基于原简历已有经历改写。`
             : '保留原始事实，仅压缩表达并前置与 JD 更相关的信息。',
           evidence: bullet,
-          sourceFactIds: this.findSourceFactIdsForText(factBase, bullet),
+          sourceFactIds,
+          ...risk,
         };
       });
     const tailoredSummary = this.buildTailoredSummary(
@@ -1264,6 +1272,57 @@ export class ResumeService {
         matchedKeywords,
       ),
       modificationReasons,
+    };
+  }
+
+  private assessRewriteRisk(
+    before: string,
+    after: string,
+    sourceFactIds: string[],
+    insertedKeyword: string | undefined,
+  ): Pick<
+    RewriteSuggestion,
+    'riskLevel' | 'riskReasons' | 'acceptedByDefault'
+  > {
+    const riskReasons: string[] = [];
+    const beforeMetrics = new Set(before.match(METRIC_PATTERN) ?? []);
+    const newMetrics = (after.match(METRIC_PATTERN) ?? []).filter(
+      (metric) => !beforeMetrics.has(metric),
+    );
+
+    if (sourceFactIds.length === 0) {
+      riskReasons.push('未找到可回溯的职业事实来源。');
+    }
+
+    if (newMetrics.length > 0) {
+      riskReasons.push(
+        `改写中出现原句未包含的数字：${newMetrics.join('、')}。`,
+      );
+    }
+
+    if (
+      insertedKeyword &&
+      !before.toLowerCase().includes(insertedKeyword.toLowerCase())
+    ) {
+      riskReasons.push(
+        `新增关键词「${insertedKeyword}」来自其他事实或技能区，需人工确认语境是否成立。`,
+      );
+    }
+
+    const riskLevel: RewriteSuggestion['riskLevel'] =
+      sourceFactIds.length === 0 || newMetrics.length > 0
+        ? 'high'
+        : riskReasons.length > 0
+          ? 'medium'
+          : 'low';
+
+    return {
+      riskLevel,
+      riskReasons:
+        riskReasons.length > 0
+          ? riskReasons
+          : ['低风险：改写未新增数字，且能追溯到原始职业事实。'],
+      acceptedByDefault: riskLevel !== 'high',
     };
   }
 

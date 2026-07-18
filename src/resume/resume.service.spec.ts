@@ -56,6 +56,17 @@ describe('ResumeService', () => {
         (suggestion) => suggestion.sourceFactIds.length > 0,
       ),
     ).toBe(true);
+    expect(result.rewrite.rewrittenExperienceBullets[0]).toMatchObject({
+      riskLevel: expect.stringMatching(/low|medium|high/) as string,
+      riskReasons: expect.any(Array) as string[],
+      acceptedByDefault: expect.any(Boolean) as boolean,
+    });
+    expect(
+      result.rewrite.rewrittenExperienceBullets.every(
+        (suggestion) =>
+          suggestion.riskLevel !== 'high' || !suggestion.acceptedByDefault,
+      ),
+    ).toBe(true);
     expect(result.rewrite.finalResumeMarkdown).toContain('AI 产品经理');
     expect(result.quality.keywordCoverage.ratio).toBeGreaterThan(0.4);
     expect(result.quality.factConsistency.riskLevel).toBe('low');
