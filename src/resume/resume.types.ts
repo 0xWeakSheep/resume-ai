@@ -67,6 +67,40 @@ export interface ResumeFactResponse {
   factBase: CareerFactBase;
 }
 
+export interface RoleRecommendationRequest {
+  resume?: {
+    text?: string;
+    file?: UploadedResumeFile;
+  };
+  answers?: string;
+}
+
+export type RoleRecommendationLevel = 'strong' | 'possible' | 'weak';
+
+export interface RoleRecommendation {
+  id: string;
+  roleTitle: string;
+  roleDescription: string;
+  relevanceScore: number;
+  level: RoleRecommendationLevel;
+  matchedKeywords: string[];
+  matchedFacts: SourceFactReference[];
+  gaps: string[];
+  reason: string;
+}
+
+export interface RoleRecommendationResponse {
+  parsedResume: ParsedResume;
+  factBase: CareerFactBase;
+  recommendations: RoleRecommendation[];
+  summary: {
+    total: number;
+    strong: number;
+    possible: number;
+    weak: number;
+  };
+}
+
 export interface JobInputSource {
   type: 'text' | 'url';
   value: string;

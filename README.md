@@ -15,6 +15,7 @@ npm run start:dev
 - `GET /api/v1`：服务信息
 - `GET /api/v1/health`：健康检查
 - `POST /api/v1/resume/facts`：从简历文本或上传文件中抽取结构化职业事实库
+- `POST /api/v1/resume/roles/recommend`：不提供 JD 时，基于简历事实库推荐岗位方向、相关性、依据和缺口
 - `POST /api/v1/resume/jobs/standardize`：标准化 JD 文本/链接，完成去重、硬门槛过滤和匹配排序
 - `POST /api/v1/resume/customize`：基于职业事实和目标 JD 生成定制简历、改写理由和质量检查
 
@@ -44,5 +45,6 @@ npm run start:prod
 
 - 文件优先：同时传入文件和文本时，优先解析上传文件。
 - 事实约束：生成内容只引用简历事实库和用户补充信息，不直接写入无法证明的能力。
+- 反向匹配：没有 JD 时，可先基于简历推荐岗位方向，不输出具体公司、真实 JD 链接或投递入口。
 - JD 批处理：支持多个 JD 文本或链接输入，失败项不阻塞其他可用岗位。
 - 质量检查：返回关键词覆盖、事实一致性、可读性、格式检查和人工审核清单。

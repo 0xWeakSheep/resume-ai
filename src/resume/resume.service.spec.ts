@@ -134,6 +134,45 @@ describe('ResumeService', () => {
     );
   });
 
+  it('recommends role directions from resume without requiring a JD', async () => {
+    const result = await service.recommendRoles({
+      resume: { text: SAMPLE_RESUME },
+    });
+
+    expect(result.factBase.totalFacts).toBeGreaterThan(8);
+    expect(result.recommendations.length).toBeGreaterThan(0);
+    const firstRecommendation = result.recommendations[0];
+    expect(firstRecommendation).toBeDefined();
+    expect(firstRecommendation?.roleTitle).toBe('AI 产品经理');
+    expect(firstRecommendation?.roleDescription.length).toBeGreaterThan(0);
+    expect(firstRecommendation?.relevanceScore).toBeGreaterThan(0);
+    expect(firstRecommendation?.matchedKeywords).toEqual(
+      expect.arrayContaining(['AI', '需求分析']),
+    );
+    expect(firstRecommendation?.matchedFacts.length).toBeGreaterThan(0);
+    expect(firstRecommendation?.gaps.length).toBeGreaterThan(0);
+    expect(firstRecommendation?.reason).toContain('可追溯事实');
+    expect(result.summary.total).toBe(result.recommendations.length);
+  });
+
+  it('recommends Web3 directions for blockchain security resumes', async () => {
+    const result = await service.recommendRoles({
+      resume: { text: BINANCE_STYLE_RESUME },
+    });
+    const titles = result.recommendations.map((item) => item.roleTitle);
+
+    expect(titles).toEqual(
+      expect.arrayContaining(['Web3 安全研究员', '区块链基础设施工程师']),
+    );
+    const web3Security = result.recommendations.find(
+      (item) => item.roleTitle === 'Web3 安全研究员',
+    );
+    expect(web3Security?.matchedKeywords).toEqual(
+      expect.arrayContaining(['Web3', 'Solidity']),
+    );
+    expect(web3Security?.matchedFacts.length).toBeGreaterThan(0);
+  });
+
   it('uses uploaded resume file before resume text when both exist', async () => {
     const fileResume = `
 李四

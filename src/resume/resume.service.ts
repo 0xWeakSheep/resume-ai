@@ -17,6 +17,10 @@ import type {
   ParsedResume,
   QualityReport,
   RequirementMapping,
+  RoleRecommendation,
+  RoleRecommendationLevel,
+  RoleRecommendationRequest,
+  RoleRecommendationResponse,
   StandardizedJob,
   ResumeCustomizeRequest,
   ResumeCustomizeResponse,
@@ -131,6 +135,189 @@ interface DeepSeekChatResponse {
   }>;
 }
 
+interface RoleRecommendationTemplate {
+  roleTitle: string;
+  roleDescription: string;
+  keywords: string[];
+  gapHints: string[];
+}
+
+const ROLE_RECOMMENDATION_TEMPLATES: RoleRecommendationTemplate[] = [
+  {
+    roleTitle: 'AI 产品经理',
+    roleDescription:
+      '负责 AI 应用场景定义、需求拆解、数据/算法/研发协作和上线效果评估。',
+    keywords: [
+      'AI',
+      'LLM',
+      'RAG',
+      'Prompt',
+      'Agent',
+      '产品设计',
+      '需求分析',
+      '数据分析',
+      '跨团队协作',
+      'A/B测试',
+    ],
+    gapHints: [
+      '补充 AI 产品指标、用户场景和上线后的业务结果。',
+      '明确你与算法、研发、业务团队之间的职责边界。',
+      '补充 Prompt、RAG、Agent 或模型评估相关证据。',
+    ],
+  },
+  {
+    roleTitle: 'AI 应用工程师',
+    roleDescription:
+      '围绕 LLM/RAG/Agent 能力搭建业务应用、后端接口、检索流程和自动化工作流。',
+    keywords: [
+      'AI',
+      'LLM',
+      'RAG',
+      'Prompt',
+      'Agent',
+      'Node.js',
+      'NestJS',
+      'TypeScript',
+      'Python',
+      'API',
+      '自动化',
+    ],
+    gapHints: [
+      '补充模型调用、检索链路、评测方式或线上稳定性指标。',
+      '说明你负责的是应用层、后端链路还是模型/数据协作。',
+      '补充可复用组件、接口性能或成本优化证据。',
+    ],
+  },
+  {
+    roleTitle: 'Web3 安全研究员',
+    roleDescription:
+      '分析区块链协议、智能合约和链上系统风险，输出漏洞复现、审计和安全复盘。',
+    keywords: [
+      'Web3',
+      'Blockchain',
+      'Solidity',
+      'EVM',
+      'DeFi',
+      '安全',
+      '审计',
+      '漏洞',
+      '复盘',
+      '智能合约',
+    ],
+    gapHints: [
+      '补充真实漏洞类型、复现过程、影响范围和修复建议。',
+      '沉淀合约审计 checklist、工具链或报告样例。',
+      '补充链上数据分析、协议机制或安全研究产出。',
+    ],
+  },
+  {
+    roleTitle: '区块链基础设施工程师',
+    roleDescription:
+      '参与链节点、交易池、共识/存储结构和链上基础设施的设计、实现与排障。',
+    keywords: [
+      'Blockchain',
+      'Web3',
+      'EVM',
+      'MPT',
+      'TxPool',
+      '交易',
+      '节点',
+      'Go',
+      '系统',
+      '协议',
+    ],
+    gapHints: [
+      '补充节点同步、交易排序、存储结构或性能优化细节。',
+      '说明你在协议设计、工程实现或问题复现中的具体职责。',
+      '补充压测、稳定性、吞吐量或异常处理数据。',
+    ],
+  },
+  {
+    roleTitle: '后端/NestJS 工程师',
+    roleDescription:
+      '负责 Node.js/NestJS 服务、API、数据库、队列、权限和部署链路的工程实现。',
+    keywords: [
+      'Node.js',
+      'NestJS',
+      'TypeScript',
+      'JavaScript',
+      'API',
+      'PostgreSQL',
+      'MySQL',
+      'MongoDB',
+      'Redis',
+      'Docker',
+      'CI/CD',
+    ],
+    gapHints: [
+      '补充接口规模、性能指标、数据库设计和线上稳定性证据。',
+      '说明你负责的模块边界、鉴权、日志、部署或监控能力。',
+      '补充测试覆盖、故障处理或系统重构结果。',
+    ],
+  },
+  {
+    roleTitle: '前端/Next.js 工程师',
+    roleDescription:
+      '负责 React/Next.js 页面、交互状态、性能优化、组件体系和前后端联调。',
+    keywords: [
+      'React',
+      'Next.js',
+      'TypeScript',
+      'JavaScript',
+      '产品设计',
+      '用户研究',
+      '性能',
+      '前端',
+    ],
+    gapHints: [
+      '补充页面性能、组件复用、状态管理或可访问性优化证据。',
+      '说明你在设计还原、交互细节和前后端联调中的职责。',
+      '补充上线数据、转化率或用户行为反馈。',
+    ],
+  },
+  {
+    roleTitle: '增长产品经理',
+    roleDescription:
+      '围绕获客、激活、留存和转化设计增长实验，用数据分析推动产品迭代。',
+    keywords: [
+      '增长',
+      '数据分析',
+      'A/B测试',
+      'SaaS',
+      '商业化',
+      'B端',
+      '产品设计',
+      '需求分析',
+      '用户研究',
+    ],
+    gapHints: [
+      '补充实验设计、样本规模、关键指标和增长结果。',
+      '说明你如何从数据发现问题并推动产品改动。',
+      '补充商业化、漏斗转化、留存或付费相关证据。',
+    ],
+  },
+  {
+    roleTitle: '数据产品经理',
+    roleDescription:
+      '负责指标体系、数据看板、分析平台和业务决策支持，连接数据、产品与业务团队。',
+    keywords: [
+      '数据分析',
+      'SQL',
+      '产品设计',
+      '需求分析',
+      '指标',
+      '看板',
+      '增长',
+      '跨团队协作',
+    ],
+    gapHints: [
+      '补充指标体系、SQL/看板建设和业务复盘场景。',
+      '说明数据口径、权限、报表或实验分析的具体贡献。',
+      '补充数据驱动产品决策后的业务结果。',
+    ],
+  },
+];
+
 @Injectable()
 export class ResumeService {
   async customize(body: unknown): Promise<ResumeCustomizeResponse> {
@@ -215,6 +402,39 @@ export class ResumeService {
     };
   }
 
+  async recommendRoles(body: unknown): Promise<RoleRecommendationResponse> {
+    const request = this.parseRoleRecommendationRequest(body);
+    const resumeText = await this.resolveResumeText(request);
+    const answers = this.normalizeText(request.answers ?? '');
+    const parsedResume = this.parseResume(
+      answers
+        ? {
+            text: `${resumeText.text}\n\n补充信息\n${answers}`,
+            sourceType: resumeText.sourceType,
+          }
+        : resumeText,
+    );
+    const factBase = this.buildCareerFactBase(parsedResume);
+    const recommendations = this.buildRoleRecommendations(
+      parsedResume,
+      factBase,
+    );
+
+    return {
+      parsedResume,
+      factBase,
+      recommendations,
+      summary: {
+        total: recommendations.length,
+        strong: recommendations.filter((item) => item.level === 'strong')
+          .length,
+        possible: recommendations.filter((item) => item.level === 'possible')
+          .length,
+        weak: recommendations.filter((item) => item.level === 'weak').length,
+      },
+    };
+  }
+
   async standardizeJobs(body: unknown): Promise<JobStandardizeResponse> {
     const request = this.parseJobStandardizeRequest(body);
     const sources = this.collectJobSources(request);
@@ -268,6 +488,16 @@ export class ResumeService {
   }
 
   private parseRequest(body: unknown): ResumeCustomizeRequest {
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+      throw new BadRequestException('Request body must be a JSON object.');
+    }
+
+    return body;
+  }
+
+  private parseRoleRecommendationRequest(
+    body: unknown,
+  ): RoleRecommendationRequest {
     if (body === null || typeof body !== 'object' || Array.isArray(body)) {
       throw new BadRequestException('Request body must be a JSON object.');
     }
@@ -677,6 +907,124 @@ export class ResumeService {
         priorityRank: rank++,
       };
     });
+  }
+
+  private buildRoleRecommendations(
+    resume: ParsedResume,
+    factBase: CareerFactBase,
+  ): RoleRecommendation[] {
+    const recommendations = ROLE_RECOMMENDATION_TEMPLATES.map(
+      (template, index) => {
+        const matchedKeywords = this.unique(
+          template.keywords.filter((keyword) =>
+            this.includesKeyword(resume.rawText, keyword),
+          ),
+        );
+        const matchedFacts = this.findRoleMatchedFacts(
+          factBase,
+          matchedKeywords,
+        );
+        const keywordRatio =
+          matchedKeywords.length / Math.min(template.keywords.length, 8);
+        const evidenceRatio = Math.min(matchedFacts.length, 4) / 4;
+        const categoryBoost =
+          (matchedFacts.some((fact) => fact.category === 'experience')
+            ? 0.12
+            : 0) +
+          (matchedFacts.some((fact) => fact.category === 'skill') ? 0.08 : 0) +
+          (matchedFacts.some((fact) => fact.category === 'metric') ? 0.05 : 0);
+        const relevanceScore = Math.max(
+          0,
+          Math.min(
+            96,
+            Math.round(
+              (keywordRatio * 0.62 + evidenceRatio * 0.23 + categoryBoost) *
+                100,
+            ),
+          ),
+        );
+        const level = this.toRoleRecommendationLevel(relevanceScore);
+        const gaps = template.gapHints.slice(0, level === 'strong' ? 2 : 3);
+
+        return {
+          id: `ROLE-${index + 1}`,
+          roleTitle: template.roleTitle,
+          roleDescription: template.roleDescription,
+          relevanceScore,
+          level,
+          matchedKeywords,
+          matchedFacts,
+          gaps,
+          reason:
+            matchedKeywords.length > 0
+              ? `简历中匹配到 ${matchedKeywords.slice(0, 6).join('、')}，并找到 ${matchedFacts.length} 条可追溯事实。`
+              : '当前简历缺少该方向的明确关键词或经历证据。',
+        } satisfies RoleRecommendation;
+      },
+    )
+      .filter(
+        (recommendation) =>
+          recommendation.relevanceScore > 0 ||
+          recommendation.matchedFacts.length > 0,
+      )
+      .sort((left, right) => {
+        const scoreDelta = right.relevanceScore - left.relevanceScore;
+        if (scoreDelta !== 0) {
+          return scoreDelta;
+        }
+
+        return right.matchedFacts.length - left.matchedFacts.length;
+      })
+      .slice(0, 6);
+
+    return recommendations.map((recommendation, index) => ({
+      ...recommendation,
+      id: `ROLE-${index + 1}`,
+    }));
+  }
+
+  private findRoleMatchedFacts(
+    factBase: CareerFactBase,
+    matchedKeywords: string[],
+  ): SourceFactReference[] {
+    if (matchedKeywords.length === 0) {
+      return [];
+    }
+
+    return factBase.facts
+      .map((fact) => {
+        const haystack = `${fact.title}\n${fact.detail}\n${fact.evidence}`;
+        const keywordHits = matchedKeywords.filter((keyword) =>
+          this.includesKeyword(haystack, keyword),
+        ).length;
+        const categoryBoost =
+          fact.category === 'experience'
+            ? 2
+            : fact.category === 'metric' || fact.category === 'skill'
+              ? 1
+              : 0;
+
+        return {
+          fact,
+          score: keywordHits * 3 + categoryBoost,
+        };
+      })
+      .filter((item) => item.score > 0 && item.score >= 3)
+      .sort((left, right) => right.score - left.score)
+      .slice(0, 5)
+      .map((item) => this.toSourceFactReference(item.fact));
+  }
+
+  private toRoleRecommendationLevel(score: number): RoleRecommendationLevel {
+    if (score >= 72) {
+      return 'strong';
+    }
+
+    if (score >= 42) {
+      return 'possible';
+    }
+
+    return 'weak';
   }
 
   private markSimilarJobs(jobs: StandardizedJob[]): StandardizedJob[] {

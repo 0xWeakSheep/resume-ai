@@ -95,6 +95,39 @@ AI 产品设计 / 需求分析 / 数据分析 / 跨团队协作
       });
   });
 
+  it('/api/v1/resume/roles/recommend works without JD (POST)', async () => {
+    await request(app.getHttpServer())
+      .post('/api/v1/resume/roles/recommend')
+      .send({
+        resume: {
+          text: `
+项目经历
+- 负责 AI 客服工作台需求分析，推动 RAG 知识库检索上线。
+- 协作算法和研发团队优化推荐流程，试点效率提升 20%。
+核心能力
+AI 产品设计 / 需求分析 / 数据分析 / 跨团队协作 / A/B测试
+`,
+        },
+      })
+      .expect(201)
+      .expect(({ body }: { body: Record<string, unknown> }) => {
+        const recommendations = body.recommendations as Array<
+          Record<string, unknown>
+        >;
+
+        expect(body).toHaveProperty('factBase');
+        expect(body).toHaveProperty('summary');
+        expect(recommendations.length).toBeGreaterThan(0);
+        expect(recommendations[0]).toMatchObject({
+          roleTitle: expect.any(String) as string,
+          roleDescription: expect.any(String) as string,
+          relevanceScore: expect.any(Number) as number,
+          matchedFacts: expect.any(Array) as unknown[],
+          gaps: expect.any(Array) as string[],
+        });
+      });
+  });
+
   it('/api/v1/resume/jobs/standardize (POST)', async () => {
     await request(app.getHttpServer())
       .post('/api/v1/resume/jobs/standardize')
