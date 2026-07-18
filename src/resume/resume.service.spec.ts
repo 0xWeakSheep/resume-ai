@@ -24,6 +24,26 @@ const SAMPLE_JD = `
 4. 有 SaaS 商业化经验优先。
 `;
 
+const BINANCE_STYLE_RESUME = `
+oftiyf
+邮箱：oftiyf@gmail.com
+Chainseclabs实验室 | 核心成员
+
+项目经历
+- 参与 Merkle Patricia Tree（MPT）与交易池（TxPool）设计，负责交易排序策略、节点同步流程和异常交易复现。
+- 设计 Web3 安全实验室内部漏洞复现流程，沉淀 Solidity 合约审计 checklist，并协作输出复盘报告。
+
+核心能力
+Solidity / Web3 / EVM / MPT / TxPool / 安全审计
+`;
+
+const BINANCE_STYLE_JD = `
+岗位：Binance - Binance Accelerator Program -
+1. 参与区块链基础设施、交易系统或 Web3 安全相关项目。
+2. 熟悉 Blockchain、EVM、Solidity 或交易池相关机制。
+3. 能够进行研究分析、问题复盘和跨团队协作。
+`;
+
 describe('ResumeService', () => {
   let service: ResumeService;
 
@@ -142,6 +162,41 @@ describe('ResumeService', () => {
     expect(result.parsedResume.sourceType).toBe('text');
     expect(result.parsedResume.rawText).toContain('李四');
     expect(result.parsedResume.rawText).not.toContain('张三');
+  });
+
+  it('keeps contact and role heading fragments out of final resume bullets', async () => {
+    const result = await service.customize({
+      resume: { text: BINANCE_STYLE_RESUME },
+      jobDescription: BINANCE_STYLE_JD,
+    });
+    const finalMarkdown = result.rewrite.finalResumeMarkdown;
+    const rewrittenText = result.rewrite.rewrittenExperienceBullets
+      .map((suggestion) => `${suggestion.before}\n${suggestion.after}`)
+      .join('\n');
+
+    expect(result.parsedJobDescription.roleTitle).toBe(
+      'Binance - Binance Accelerator Program',
+    );
+    expect(result.parsedResume.extracted.experienceBullets).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('MPT'),
+        expect.stringContaining('Solidity'),
+      ]),
+    );
+    expect(finalMarkdown).toContain(
+      '# Binance - Binance Accelerator Program 简历定制版',
+    );
+    expect(finalMarkdown).toContain('## 资料概览');
+    expect(finalMarkdown).toContain('## 人工审核提示');
+    expect(finalMarkdown).toContain('MPT');
+    expect(finalMarkdown).toContain('TxPool');
+    expect(finalMarkdown).not.toContain('定制简历草稿');
+    expect(finalMarkdown).not.toContain('邮箱');
+    expect(finalMarkdown).not.toContain('oftiyf@gmail.com');
+    expect(finalMarkdown).not.toContain('Chainseclabs实验室 | 核心成员');
+    expect(rewrittenText).not.toContain('邮箱');
+    expect(rewrittenText).not.toContain('Chainseclabs实验室 | 核心成员');
+    expect(result.rewrite.skillsToEmphasize).not.toContain('AI');
   });
 
   it('standardizes multiple JD sources and isolates failures', async () => {

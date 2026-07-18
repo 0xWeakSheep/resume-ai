@@ -52,6 +52,13 @@ const KNOWN_KEYWORDS = [
   'RAG',
   'Prompt',
   'Agent',
+  'Web3',
+  'Blockchain',
+  'Solidity',
+  'EVM',
+  'DeFi',
+  'MPT',
+  'TxPool',
   'React',
   'Next.js',
   'Node.js',
@@ -93,6 +100,16 @@ const REQUIREMENT_PREFIX =
 const METRIC_PATTERN =
   /\d+(?:\.\d+)?\s*(?:%|人|天|周|月|年|倍|万|k|K|次|小时|h|ms|s)?/g;
 const URL_FETCH_TIMEOUT_MS = 5000;
+const EXPERIENCE_ACTION_PATTERN =
+  /负责|推动|设计|搭建|实现|优化|提升|降低|协作|主导|参与|开发|构建|落地|上线|复盘|沉淀|梳理|维护|集成|验证|交付|led|built|improved|designed|implemented|owned|shipped|launched|optimized|collaborated/i;
+const EXPERIENCE_CONTEXT_PATTERN =
+  /项目|经历|系统|平台|流程|模块|策略|交易|节点|合约|产品|业务|用户|团队|模型|数据|安全|审计|增长|实验|protocol|system|platform|pipeline|research|security/i;
+const CONTACT_LINE_PATTERN =
+  /(?:[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|https?:\/\/|www\.|github\.com|linkedin\.com|电话|手机|邮箱|邮件|微信|wechat|telegram|地址|所在地)/i;
+const PROFILE_HEADING_PATTERN =
+  /^(姓名|邮箱|邮件|电话|手机|微信|wechat|telegram|github|linkedin|个人网站|地址|所在地|求职意向|个人信息)[:：\s]/i;
+const ROLE_ONLY_LINE_PATTERN =
+  /^[\p{L}\p{N} .·()（）&+/,-]{2,60}\s*(?:\||｜|—|–|-)\s*(?:核心成员|成员|负责人|创始人|联合创始人|实习生|工程师|开发者|研究员|产品经理|顾问|leader|member|founder|engineer|developer|researcher|intern)\s*$/iu;
 
 @Injectable()
 export class ResumeService {
@@ -844,7 +861,7 @@ export class ResumeService {
 
     if (requirement.type === 'skill' && requirementKeywords.length > 0) {
       const matchedKeywordCount = requirementKeywords.filter((keyword) =>
-        resume.rawText.toLowerCase().includes(keyword.toLowerCase()),
+        this.includesKeyword(resume.rawText, keyword),
       ).length;
       const ratio = matchedKeywordCount / requirementKeywords.length;
 
@@ -993,10 +1010,9 @@ export class ResumeService {
     }
 
     return lines
+      .filter((line) => !this.isNonEvidenceLine(line))
       .filter((line) =>
-        keywords.some((keyword) =>
-          line.toLowerCase().includes(keyword.toLowerCase()),
-        ),
+        keywords.some((keyword) => this.includesKeyword(line, keyword)),
       )
       .slice(0, 3);
   }
@@ -1164,7 +1180,9 @@ export class ResumeService {
     resume: ParsedResume,
     jd: ParsedJobDescription,
   ): RequirementMapping[] {
-    const resumeLines = this.toLines(resume.rawText);
+    const resumeLines = this.toLines(resume.rawText).filter(
+      (line) => !this.isNonEvidenceLine(line),
+    );
     const resumeKeywords = new Set(resume.extracted.keywords);
 
     return jd.requirements.map((requirement) => {
@@ -1174,7 +1192,7 @@ export class ResumeService {
       const evidence = resumeLines
         .filter((line) =>
           matchedKeywords.some((keyword) =>
-            line.toLowerCase().includes(keyword.toLowerCase()),
+            this.includesKeyword(line, keyword),
           ),
         )
         .slice(0, 3);
@@ -1211,10 +1229,11 @@ export class ResumeService {
       .filter((mapping) => mapping.status !== 'missing')
       .flatMap((mapping) => mapping.evidence)
       .filter(Boolean);
-    const sourceBullets =
-      strongEvidence.length > 0
-        ? this.unique(strongEvidence)
-        : resume.extracted.experienceBullets;
+    const sourceBullets = this.unique(
+      [...strongEvidence, ...resume.extracted.experienceBullets].map((line) =>
+        this.stripBulletPrefix(line),
+      ),
+    ).filter((line) => this.isSafeRewriteCandidate(line));
     const keywordsForRewrite = matchedKeywords.slice(0, 6);
     const sourceFacts = this.pickSourceFactsForJob(
       factBase,
@@ -1225,7 +1244,7 @@ export class ResumeService {
       .slice(0, 6)
       .map((bullet): RewriteSuggestion => {
         const insertedKeyword = keywordsForRewrite.find(
-          (keyword) => !bullet.toLowerCase().includes(keyword.toLowerCase()),
+          (keyword) => !this.includesKeyword(bullet, keyword),
         );
         const after = insertedKeyword
           ? `围绕 ${insertedKeyword}，${this.stripBulletPrefix(bullet)}`
@@ -1300,10 +1319,7 @@ export class ResumeService {
       );
     }
 
-    if (
-      insertedKeyword &&
-      !before.toLowerCase().includes(insertedKeyword.toLowerCase())
-    ) {
+    if (insertedKeyword && !this.includesKeyword(before, insertedKeyword)) {
       riskReasons.push(
         `新增关键词「${insertedKeyword}」来自其他事实或技能区，需人工确认语境是否成立。`,
       );
@@ -1539,7 +1555,7 @@ export class ResumeService {
       .map((fact) => {
         const haystack = `${fact.title}\n${fact.detail}\n${fact.evidence}`;
         const keywordHits = keywords.filter((keyword) =>
-          haystack.toLowerCase().includes(keyword.toLowerCase()),
+          this.includesKeyword(haystack, keyword),
         ).length;
         const categoryBoost =
           fact.category === 'experience'
@@ -1590,9 +1606,7 @@ export class ResumeService {
     return factBase.facts
       .filter((fact) =>
         keywords.some((keyword) =>
-          `${fact.detail}\n${fact.evidence}`
-            .toLowerCase()
-            .includes(keyword.toLowerCase()),
+          this.includesKeyword(`${fact.detail}\n${fact.evidence}`, keyword),
         ),
       )
       .slice(0, 3)
@@ -1638,6 +1652,27 @@ export class ResumeService {
       .trim();
   }
 
+  private includesKeyword(text: string, keyword: string): boolean {
+    const normalizedKeyword = this.normalizeText(keyword);
+    if (!normalizedKeyword) {
+      return false;
+    }
+
+    if (/^[A-Za-z][A-Za-z0-9+/#.-]{0,16}$/.test(normalizedKeyword)) {
+      const escapedKeyword = this.escapeRegExp(normalizedKeyword);
+      return new RegExp(
+        `(^|[^A-Za-z0-9])${escapedKeyword}([^A-Za-z0-9]|$)`,
+        'i',
+      ).test(text);
+    }
+
+    return text.toLowerCase().includes(normalizedKeyword.toLowerCase());
+  }
+
+  private escapeRegExp(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
   private toLines(text: string): string[] {
     return text
       .split('\n')
@@ -1679,23 +1714,68 @@ export class ResumeService {
       /(岗位|职位|招聘)[:：\s]*(?<title>[^，,。；;\n]{2,40})/,
     );
 
-    return (
-      titleMatch?.groups?.title?.trim() || firstLine.slice(0, 40) || '目标岗位'
+    return this.cleanRoleTitle(
+      titleMatch?.groups?.title?.trim() || firstLine.slice(0, 40),
     );
+  }
+
+  private cleanRoleTitle(value: string): string {
+    const cleaned = this.normalizeText(value)
+      .replace(/^(岗位|职位|招聘)[:：\s]*/i, '')
+      .replace(/(?:\s*[-—–|｜:：]+\s*)+$/g, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+
+    return cleaned || '目标岗位';
   }
 
   private extractResumeBullets(lines: string[]): string[] {
     return this.unique(
       lines
-        .filter((line) => line.length >= 12)
-        .filter((line) =>
-          /[-•·]|负责|推动|设计|搭建|实现|优化|提升|降低|协作|led|built|improved/i.test(
-            line,
-          ),
-        )
         .map((line) => this.stripBulletPrefix(line))
+        .filter((line) => this.isSafeRewriteCandidate(line))
         .slice(0, 12),
     );
+  }
+
+  private isSafeRewriteCandidate(line: string): boolean {
+    const candidate = this.stripBulletPrefix(line);
+    if (this.isNonEvidenceLine(candidate) || candidate.length < 16) {
+      return false;
+    }
+
+    const hasAction = EXPERIENCE_ACTION_PATTERN.test(candidate);
+    const hasMetric = (candidate.match(METRIC_PATTERN) ?? []).length > 0;
+    const hasContext = EXPERIENCE_CONTEXT_PATTERN.test(candidate);
+
+    return hasAction && (hasContext || hasMetric || candidate.length >= 24);
+  }
+
+  private isNonEvidenceLine(line: string): boolean {
+    const candidate = this.stripBulletPrefix(line);
+    if (!candidate || candidate.length < 4) {
+      return true;
+    }
+
+    if (SECTION_MATCHERS.some((matcher) => matcher.pattern.test(candidate))) {
+      return true;
+    }
+
+    if (
+      CONTACT_LINE_PATTERN.test(candidate) ||
+      PROFILE_HEADING_PATTERN.test(candidate)
+    ) {
+      return true;
+    }
+
+    if (
+      ROLE_ONLY_LINE_PATTERN.test(candidate) &&
+      !EXPERIENCE_ACTION_PATTERN.test(candidate)
+    ) {
+      return true;
+    }
+
+    return false;
   }
 
   private extractEducation(sectionLines: string[], rawText: string): string[] {
@@ -1710,9 +1790,8 @@ export class ResumeService {
   }
 
   private extractKeywords(text: string): string[] {
-    const lowerText = text.toLowerCase();
     const known = KNOWN_KEYWORDS.filter((keyword) =>
-      lowerText.includes(keyword.toLowerCase()),
+      this.includesKeyword(text, keyword),
     );
     const acronyms = text.match(/\b[A-Z][A-Z0-9+/#.-]{1,12}\b/g) ?? [];
     const chineseTerms =
@@ -1773,7 +1852,9 @@ export class ResumeService {
     matchedKeywords: string[],
   ): string[] {
     const mainSkills = matchedKeywords.slice(0, 4);
-    const experienceEvidence = resume.extracted.experienceBullets[0];
+    const experienceEvidence = resume.extracted.experienceBullets.find((line) =>
+      this.isSafeRewriteCandidate(line),
+    );
 
     return [
       `面向「${jd.roleTitle}」岗位，优先呈现 ${mainSkills.length > 0 ? mainSkills.join('、') : '与 JD 已匹配的'} 相关经验。`,
@@ -1814,7 +1895,7 @@ export class ResumeService {
         ? matchedKeywords.map((keyword) => `\`${keyword}\``).join(' ')
         : '待补充';
 
-    return `# ${jd.roleTitle} 定制简历草稿\n\n## 岗位匹配摘要\n${summary}\n\n## 重点经历改写\n${bullets}\n\n## 建议强调技能\n${skills}\n`;
+    return `# ${jd.roleTitle} 简历定制版\n\n## 资料概览\n- 目标岗位：${jd.roleTitle}\n- 生成边界：以下内容仅基于已提交简历和补充信息生成；无法证明的能力保留为待补充项。\n\n## 岗位匹配摘要\n${summary}\n\n## 重点经历改写\n${bullets}\n\n## 建议强调技能\n${skills}\n\n## 人工审核提示\n- 导出前确认项目名称、时间范围、职责边界和数字成果均真实准确。\n- 对“待补充”或高风险项先补充事实，再纳入最终投递版本。\n`;
   }
 
   private stripBulletPrefix(value: string): string {
