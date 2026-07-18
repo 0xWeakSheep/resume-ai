@@ -1266,9 +1266,7 @@ export class ResumeService {
         const insertedKeyword = keywordsForRewrite.find(
           (keyword) => !this.includesKeyword(bullet, keyword),
         );
-        const after = insertedKeyword
-          ? `围绕 ${insertedKeyword}，${this.stripBulletPrefix(bullet)}`
-          : this.stripBulletPrefix(bullet);
+        const after = this.buildSuggestedRewriteAfter(bullet, insertedKeyword);
         const sourceFactIds = this.findSourceFactIdsForText(factBase, bullet);
         const risk = this.assessRewriteRisk(
           bullet,
@@ -1319,6 +1317,22 @@ export class ResumeService {
       matchedKeywords,
       sourceFacts,
     );
+  }
+
+  private buildSuggestedRewriteAfter(
+    bullet: string,
+    insertedKeyword: string | undefined,
+  ): string {
+    const cleanBullet = this.stripBulletPrefix(bullet).replace(
+      /[。；;,.，、]+$/u,
+      '',
+    );
+
+    if (!insertedKeyword) {
+      return cleanBullet;
+    }
+
+    return `${cleanBullet}，可支撑目标岗位对 ${insertedKeyword} 相关能力的要求。`;
   }
 
   private async refineRewriteWithModel(
