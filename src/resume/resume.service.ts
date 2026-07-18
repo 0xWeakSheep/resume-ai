@@ -1181,7 +1181,10 @@ export class ResumeService {
       filterStatus,
       match,
       warnings: blockedByHardRequirements
-        ? [...job.warnings, '存在未满足硬门槛，建议降级或过滤。']
+        ? [
+            ...job.warnings,
+            '存在未满足硬门槛，需要人工复核；可继续生成，但不要补写无法证明的能力。',
+          ]
         : job.warnings,
     };
   }
