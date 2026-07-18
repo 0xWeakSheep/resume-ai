@@ -50,6 +50,12 @@ describe('ResumeService', () => {
       expect.arrayContaining(['AI', 'RAG', '需求分析', '数据分析']),
     );
     expect(result.rewrite.rewrittenExperienceBullets.length).toBeGreaterThan(0);
+    expect(result.rewrite.sourceFacts.length).toBeGreaterThan(0);
+    expect(
+      result.rewrite.rewrittenExperienceBullets.some(
+        (suggestion) => suggestion.sourceFactIds.length > 0,
+      ),
+    ).toBe(true);
     expect(result.rewrite.finalResumeMarkdown).toContain('AI 产品经理');
     expect(result.quality.keywordCoverage.ratio).toBeGreaterThan(0.4);
     expect(result.quality.factConsistency.riskLevel).toBe('low');

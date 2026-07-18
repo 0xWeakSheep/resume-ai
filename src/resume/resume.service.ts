@@ -23,6 +23,7 @@ import type {
   ResumeFactResponse,
   ResumeFileKind,
   RewriteSuggestion,
+  SourceFactReference,
   UploadedResumeFile,
 } from './resume.types';
 
@@ -112,6 +113,7 @@ export class ResumeService {
         : resumeText,
     );
     const parsedJobDescription = this.parseJobDescription(jdText);
+    const factBase = this.buildCareerFactBase(parsedResume);
     const requirementMappings = this.mapRequirements(
       parsedResume,
       parsedJobDescription,
@@ -132,6 +134,7 @@ export class ResumeService {
       parsedJobDescription,
       requirementMappings,
       matchedKeywords,
+      factBase,
     );
     const quality = this.buildQualityReport(
       parsedResume,
@@ -1202,6 +1205,7 @@ export class ResumeService {
     jd: ParsedJobDescription,
     mappings: RequirementMapping[],
     matchedKeywords: string[],
+    factBase: CareerFactBase,
   ): ResumeCustomizeResponse['rewrite'] {
     const strongEvidence = mappings
       .filter((mapping) => mapping.status !== 'missing')
@@ -1212,6 +1216,11 @@ export class ResumeService {
         ? this.unique(strongEvidence)
         : resume.extracted.experienceBullets;
     const keywordsForRewrite = matchedKeywords.slice(0, 6);
+    const sourceFacts = this.pickSourceFactsForJob(
+      factBase,
+      jd,
+      matchedKeywords,
+    );
     const rewrittenExperienceBullets = sourceBullets
       .slice(0, 6)
       .map((bullet): RewriteSuggestion => {
@@ -1229,6 +1238,7 @@ export class ResumeService {
             ? `补齐目标 JD 中的 ${insertedKeyword} 表达，但只基于原简历已有经历改写。`
             : '保留原始事实，仅压缩表达并前置与 JD 更相关的信息。',
           evidence: bullet,
+          sourceFactIds: this.findSourceFactIdsForText(factBase, bullet),
         };
       });
     const tailoredSummary = this.buildTailoredSummary(
@@ -1246,6 +1256,7 @@ export class ResumeService {
       tailoredSummary,
       rewrittenExperienceBullets,
       skillsToEmphasize: matchedKeywords.slice(0, 10),
+      sourceFacts,
       finalResumeMarkdown: this.buildFinalResumeMarkdown(
         jd,
         tailoredSummary,
@@ -1452,6 +1463,90 @@ export class ResumeService {
       facts,
       grouped,
       warnings: resume.warnings,
+    };
+  }
+
+  private pickSourceFactsForJob(
+    factBase: CareerFactBase,
+    jd: ParsedJobDescription,
+    matchedKeywords: string[],
+  ): SourceFactReference[] {
+    const keywords = this.unique([
+      ...matchedKeywords,
+      ...jd.criticalKeywords,
+      ...jd.keywords.slice(0, 6),
+    ]);
+    const scoredFacts = factBase.facts
+      .map((fact) => {
+        const haystack = `${fact.title}\n${fact.detail}\n${fact.evidence}`;
+        const keywordHits = keywords.filter((keyword) =>
+          haystack.toLowerCase().includes(keyword.toLowerCase()),
+        ).length;
+        const categoryBoost =
+          fact.category === 'experience'
+            ? 2
+            : fact.category === 'metric' || fact.category === 'skill'
+              ? 1
+              : 0;
+
+        return {
+          fact,
+          score: keywordHits * 3 + categoryBoost,
+        };
+      })
+      .filter((item) => item.score > 0)
+      .sort((left, right) => right.score - left.score);
+    const candidates =
+      scoredFacts.length > 0
+        ? scoredFacts.map((item) => item.fact)
+        : factBase.facts.filter((fact) => fact.category === 'experience');
+
+    return candidates
+      .slice(0, 8)
+      .map((fact) => this.toSourceFactReference(fact));
+  }
+
+  private findSourceFactIdsForText(
+    factBase: CareerFactBase,
+    text: string,
+  ): string[] {
+    const normalizedText = this.stripBulletPrefix(text).toLowerCase();
+    const keywords = this.extractKeywords(text);
+    const directMatches = factBase.facts.filter((fact) => {
+      const detail = fact.detail.toLowerCase();
+      const evidence = fact.evidence.toLowerCase();
+
+      return (
+        normalizedText.includes(detail) ||
+        detail.includes(normalizedText) ||
+        normalizedText.includes(evidence) ||
+        evidence.includes(normalizedText)
+      );
+    });
+
+    if (directMatches.length > 0) {
+      return directMatches.slice(0, 3).map((fact) => fact.id);
+    }
+
+    return factBase.facts
+      .filter((fact) =>
+        keywords.some((keyword) =>
+          `${fact.detail}\n${fact.evidence}`
+            .toLowerCase()
+            .includes(keyword.toLowerCase()),
+        ),
+      )
+      .slice(0, 3)
+      .map((fact) => fact.id);
+  }
+
+  private toSourceFactReference(fact: CareerFact): SourceFactReference {
+    return {
+      id: fact.id,
+      category: fact.category,
+      detail: fact.detail,
+      evidence: fact.evidence,
+      confidence: fact.confidence,
     };
   }
 

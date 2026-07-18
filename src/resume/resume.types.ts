@@ -169,6 +169,15 @@ export interface RewriteSuggestion {
   after: string;
   reason: string;
   evidence: string;
+  sourceFactIds: string[];
+}
+
+export interface SourceFactReference {
+  id: string;
+  category: CareerFactCategory;
+  detail: string;
+  evidence: string;
+  confidence: CareerFact['confidence'];
 }
 
 export interface QualityReport {
@@ -210,6 +219,7 @@ export interface ResumeCustomizeResponse {
     tailoredSummary: string[];
     rewrittenExperienceBullets: RewriteSuggestion[];
     skillsToEmphasize: string[];
+    sourceFacts: SourceFactReference[];
     finalResumeMarkdown: string;
     modificationReasons: string[];
   };

@@ -62,6 +62,9 @@ AI 产品设计 / 需求分析 / 数据分析 / 跨团队协作
         expect(body).toHaveProperty('analysis');
         expect(body).toHaveProperty('rewrite');
         expect(body).toHaveProperty('quality');
+        expect(body.rewrite).toMatchObject({
+          sourceFacts: expect.any(Array) as unknown[],
+        });
       });
   });
 
