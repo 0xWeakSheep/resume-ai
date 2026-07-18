@@ -264,10 +264,10 @@ const ROLE_RECOMMENDATION_TEMPLATES: RoleRecommendationTemplate[] = [
       'Next.js',
       'TypeScript',
       'JavaScript',
-      '产品设计',
-      '用户研究',
       '性能',
       '前端',
+      '组件',
+      '交互',
     ],
     gapHints: [
       '补充页面性能、组件复用、状态管理或可访问性优化证据。',
@@ -993,10 +993,17 @@ export class ResumeService {
 
     return factBase.facts
       .map((fact) => {
-        const haystack = `${fact.title}\n${fact.detail}\n${fact.evidence}`;
-        const keywordHits = matchedKeywords.filter((keyword) =>
-          this.includesKeyword(haystack, keyword),
+        const factText = `${fact.title}\n${fact.detail}`;
+        const detailHits = matchedKeywords.filter((keyword) =>
+          this.includesKeyword(factText, keyword),
         ).length;
+        const evidenceHits = matchedKeywords.filter((keyword) =>
+          this.includesKeyword(fact.evidence, keyword),
+        ).length;
+        const keywordHits =
+          fact.category === 'skill' || fact.category === 'keyword'
+            ? detailHits
+            : Math.max(detailHits, evidenceHits);
         const categoryBoost =
           fact.category === 'experience'
             ? 2
