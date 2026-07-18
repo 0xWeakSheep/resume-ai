@@ -73,6 +73,11 @@ export interface JobInputSource {
 }
 
 export interface JobStandardizeRequest {
+  resume?: {
+    text?: string;
+    file?: UploadedResumeFile;
+  };
+  answers?: string;
   jobDescription?: string;
   jobDescriptions?: string[];
   jobUrls?: string[];
@@ -83,6 +88,23 @@ export interface HardRequirement {
   type:
     'education' | 'experience' | 'location' | 'language' | 'skill' | 'other';
   text: string;
+}
+
+export interface HardRequirementMatch {
+  type: HardRequirement['type'];
+  text: string;
+  status: 'matched' | 'partial' | 'missing';
+  evidence: string[];
+}
+
+export interface JobMatchReport {
+  score: number;
+  level: 'high' | 'medium' | 'low' | 'unmatched';
+  matchedKeywords: string[];
+  missingKeywords: string[];
+  hardRequirementResults: HardRequirementMatch[];
+  blockedByHardRequirements: boolean;
+  reasons: string[];
 }
 
 export interface StandardizedJob {
@@ -98,6 +120,11 @@ export interface StandardizedJob {
   keywords: string[];
   criticalKeywords: string[];
   hardRequirements: HardRequirement[];
+  similarityGroupId?: string;
+  duplicateOf?: string;
+  filterStatus?: 'pass' | 'review' | 'blocked';
+  priorityRank?: number;
+  match?: JobMatchReport;
   warnings: string[];
 }
 
@@ -108,6 +135,8 @@ export interface JobStandardizeResponse {
     ready: number;
     failed: number;
     duplicate: number;
+    ranked: number;
+    blocked: number;
   };
 }
 

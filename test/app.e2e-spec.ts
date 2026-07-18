@@ -118,6 +118,61 @@ AI 产品设计 / 需求分析 / 数据分析 / 跨团队协作
       });
   });
 
+  it('/api/v1/resume/jobs/standardize ranks against resume (POST)', async () => {
+    await request(app.getHttpServer())
+      .post('/api/v1/resume/jobs/standardize')
+      .send({
+        resume: {
+          text: `
+项目经历
+- 负责 AI 客服工作台需求分析，推动 RAG 知识库检索上线。
+- 协作算法和研发团队优化推荐流程，试点效率提升 20%。
+教育经历
+某某大学 本科 信息管理
+核心能力
+AI 产品设计 / 需求分析 / 数据分析 / 跨团队协作 / A/B测试
+`,
+        },
+        jobDescriptions: [
+          `
+岗位：AI 产品经理
+1. 负责 AI 应用产品需求分析和产品设计。
+2. 熟悉 RAG 和 LLM，能推动跨团队落地。
+3. 具备数据分析能力。
+`,
+          `
+岗位：云原生平台工程师
+1. 硕士及以上学历，5 年以上 Kubernetes 和 AWS 生产部署经验。
+2. 必须熟悉 Go、Kubernetes、AWS。
+`,
+        ],
+      })
+      .expect(201)
+      .expect(({ body }: { body: Record<string, unknown> }) => {
+        const jobs = body.jobs as Array<Record<string, unknown>>;
+
+        expect(body.summary).toMatchObject({
+          total: 2,
+          ready: 2,
+          ranked: 2,
+          blocked: 1,
+        });
+        expect(jobs[0]).toMatchObject({
+          roleTitle: 'AI 产品经理',
+          priorityRank: 1,
+          filterStatus: 'pass',
+        });
+        expect(jobs[0].match).toMatchObject({
+          score: expect.any(Number) as number,
+          blockedByHardRequirements: false,
+        });
+        expect(jobs[1]).toMatchObject({
+          roleTitle: '云原生平台工程师',
+          filterStatus: 'blocked',
+        });
+      });
+  });
+
   afterEach(async () => {
     await app.close();
   });

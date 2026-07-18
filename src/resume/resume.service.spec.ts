@@ -129,6 +129,57 @@ describe('ResumeService', () => {
     expect(result.jobs[3].warnings.join('\n')).toContain('内网或本机地址');
   });
 
+  it('deduplicates similar JDs and ranks matches against resume facts', async () => {
+    const result = await service.standardizeJobs({
+      resume: { text: SAMPLE_RESUME },
+      jobDescriptions: [
+        SAMPLE_JD,
+        `
+岗位：AI 产品经理
+1. 负责 AI 应用产品的需求分析和产品设计。
+2. 熟悉 RAG 和数据分析，能够推动跨团队落地。
+`,
+        `
+岗位：增长产品经理
+1. 负责 B端 SaaS 增长实验和数据分析。
+2. 熟悉 SQL 和 A/B测试，能够推动跨团队项目。
+`,
+        `
+岗位：云原生平台工程师
+1. 硕士及以上学历，5 年以上 Kubernetes 和 AWS 生产部署经验。
+2. 必须熟悉 Go、Kubernetes、AWS。
+`,
+      ],
+    });
+    const duplicate = result.jobs.find((job) => job.status === 'duplicate');
+    const blocked = result.jobs.find(
+      (job) => job.roleTitle === '云原生平台工程师',
+    );
+    const readyJobs = result.jobs.filter((job) => job.status === 'ready');
+
+    expect(result.summary).toMatchObject({
+      total: 4,
+      ready: 3,
+      duplicate: 1,
+      ranked: 3,
+      blocked: 1,
+    });
+    expect(result.jobs[0]).toMatchObject({
+      roleTitle: 'AI 产品经理',
+      priorityRank: 1,
+      filterStatus: 'pass',
+    });
+    expect(result.jobs[0].match?.score).toBeGreaterThan(60);
+    expect(duplicate?.duplicateOf).toBe('JOB-1');
+    expect(blocked).toMatchObject({
+      filterStatus: 'blocked',
+      match: {
+        blockedByHardRequirements: true,
+      },
+    });
+    expect(readyJobs.map((job) => job.priorityRank)).toEqual([1, 2, 3]);
+  });
+
   it('rejects empty resume input', async () => {
     await expect(
       service.customize({

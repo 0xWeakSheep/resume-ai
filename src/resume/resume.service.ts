@@ -7,7 +7,9 @@ import type {
   CareerFactBase,
   CareerFactCategory,
   HardRequirement,
+  HardRequirementMatch,
   JobInputSource,
+  JobMatchReport,
   JobRequirement,
   JobStandardizeRequest,
   JobStandardizeResponse,
@@ -176,6 +178,8 @@ export class ResumeService {
   async standardizeJobs(body: unknown): Promise<JobStandardizeResponse> {
     const request = this.parseJobStandardizeRequest(body);
     const sources = this.collectJobSources(request);
+    const resumeForMatching =
+      await this.resolveOptionalResumeForMatching(request);
     const seenSources = new Set<string>();
     const jobs: StandardizedJob[] = [];
 
@@ -204,13 +208,21 @@ export class ResumeService {
       jobs.push(await this.standardizeJobUrl(id, source));
     }
 
+    const processedJobs = this.rankAndFilterJobs(jobs, resumeForMatching);
+
     return {
-      jobs,
+      jobs: processedJobs,
       summary: {
-        total: jobs.length,
-        ready: jobs.filter((job) => job.status === 'ready').length,
-        failed: jobs.filter((job) => job.status === 'failed').length,
-        duplicate: jobs.filter((job) => job.status === 'duplicate').length,
+        total: processedJobs.length,
+        ready: processedJobs.filter((job) => job.status === 'ready').length,
+        failed: processedJobs.filter((job) => job.status === 'failed').length,
+        duplicate: processedJobs.filter((job) => job.status === 'duplicate')
+          .length,
+        ranked: processedJobs.filter(
+          (job) => job.status === 'ready' && job.match,
+        ).length,
+        blocked: processedJobs.filter((job) => job.filterStatus === 'blocked')
+          .length,
       },
     };
   }
@@ -279,6 +291,30 @@ export class ResumeService {
     }
 
     return sources.slice(0, 20);
+  }
+
+  private async resolveOptionalResumeForMatching(
+    request: JobStandardizeRequest,
+  ): Promise<ParsedResume | null> {
+    const hasResumeText =
+      this.normalizeText(request.resume?.text ?? '').length > 0;
+    const hasResumeFile = Boolean(request.resume?.file);
+
+    if (!hasResumeText && !hasResumeFile) {
+      return null;
+    }
+
+    const resumeText = await this.resolveResumeText(request);
+    const answers = this.normalizeText(request.answers ?? '');
+
+    return this.parseResume(
+      answers
+        ? {
+            text: `${resumeText.text}\n\n补充信息\n${answers}`,
+            sourceType: resumeText.sourceType,
+          }
+        : resumeText,
+    );
   }
 
   private async resolveResumeText(
@@ -553,6 +589,439 @@ export class ResumeService {
     };
   }
 
+  private rankAndFilterJobs(
+    jobs: StandardizedJob[],
+    resume: ParsedResume | null,
+  ): StandardizedJob[] {
+    const dedupedJobs = this.markSimilarJobs(jobs);
+    const matchedJobs = dedupedJobs.map((job) =>
+      job.status === 'ready' && resume
+        ? this.attachJobMatchReport(job, resume)
+        : job,
+    );
+    const sortedJobs = matchedJobs
+      .map((job, index) => ({ job, index }))
+      .sort((left, right) => {
+        const statusDelta =
+          this.getJobStatusSortWeight(left.job) -
+          this.getJobStatusSortWeight(right.job);
+        if (statusDelta !== 0) {
+          return statusDelta;
+        }
+
+        const filterDelta =
+          this.getJobFilterSortWeight(left.job) -
+          this.getJobFilterSortWeight(right.job);
+        if (filterDelta !== 0) {
+          return filterDelta;
+        }
+
+        const scoreDelta =
+          (right.job.match?.score ?? 0) - (left.job.match?.score ?? 0);
+        if (scoreDelta !== 0) {
+          return scoreDelta;
+        }
+
+        return left.index - right.index;
+      })
+      .map((item) => item.job);
+    let rank = 1;
+
+    return sortedJobs.map((job) => {
+      if (job.status !== 'ready') {
+        return job;
+      }
+
+      return {
+        ...job,
+        priorityRank: rank++,
+      };
+    });
+  }
+
+  private markSimilarJobs(jobs: StandardizedJob[]): StandardizedJob[] {
+    const representatives: StandardizedJob[] = [];
+
+    return jobs.map((job) => {
+      if (job.status !== 'ready') {
+        return job;
+      }
+
+      const representative = representatives.find((candidate) =>
+        this.areSimilarJobs(candidate, job),
+      );
+
+      if (representative) {
+        return {
+          ...job,
+          status: 'duplicate',
+          duplicateOf: representative.id,
+          similarityGroupId: representative.similarityGroupId,
+          warnings: [
+            ...job.warnings,
+            `与 ${representative.id} 高度相似，已作为重复 JD 降级。`,
+          ],
+        };
+      }
+
+      const nextJob = {
+        ...job,
+        similarityGroupId: `GROUP-${representatives.length + 1}`,
+      };
+      representatives.push(nextJob);
+
+      return nextJob;
+    });
+  }
+
+  private areSimilarJobs(
+    left: StandardizedJob,
+    right: StandardizedJob,
+  ): boolean {
+    const compactLeft = left.normalizedText.replace(/\s+/g, '').toLowerCase();
+    const compactRight = right.normalizedText.replace(/\s+/g, '').toLowerCase();
+
+    if (compactLeft.length > 0 && compactLeft === compactRight) {
+      return true;
+    }
+
+    const sameRole =
+      this.normalizeComparisonToken(left.roleTitle) ===
+      this.normalizeComparisonToken(right.roleTitle);
+    const keywordSimilarity = this.jaccardSimilarity(
+      left.keywords,
+      right.keywords,
+    );
+    const tokenSimilarity = this.jaccardSimilarity(
+      this.getJobComparisonTokens(left),
+      this.getJobComparisonTokens(right),
+    );
+
+    return (
+      tokenSimilarity >= 0.72 ||
+      (sameRole && Math.max(keywordSimilarity, tokenSimilarity) >= 0.25)
+    );
+  }
+
+  private getJobComparisonTokens(job: StandardizedJob): string[] {
+    return this.unique([
+      this.normalizeComparisonToken(job.roleTitle),
+      this.normalizeComparisonToken(job.company ?? ''),
+      ...job.keywords,
+      ...job.requirements.flatMap((requirement) =>
+        this.extractKeywords(requirement.text),
+      ),
+      ...job.hardRequirements.map(
+        (requirement) =>
+          `${requirement.type}:${this.normalizeComparisonToken(requirement.text).slice(0, 32)}`,
+      ),
+    ]);
+  }
+
+  private attachJobMatchReport(
+    job: StandardizedJob,
+    resume: ParsedResume,
+  ): StandardizedJob {
+    const parsedJobDescription = {
+      rawText: job.normalizedText,
+      roleTitle: job.roleTitle,
+      requirements: job.requirements,
+      keywords: job.keywords,
+      criticalKeywords: job.criticalKeywords,
+    } satisfies ParsedJobDescription;
+    const mappings = this.mapRequirements(resume, parsedJobDescription);
+    const matchedKeywords = this.unique(
+      mappings.flatMap((mapping) => mapping.matchedKeywords),
+    );
+    const missingKeywords = job.keywords.filter(
+      (keyword) => !matchedKeywords.includes(keyword),
+    );
+    const hardRequirementResults = job.hardRequirements.map((requirement) =>
+      this.matchHardRequirement(resume, requirement),
+    );
+    const blockedByHardRequirements = hardRequirementResults.some((result) =>
+      this.isBlockingHardRequirement(result),
+    );
+    const requirementScore = this.averageMatchScore(
+      mappings.map((mapping) => mapping.status),
+    );
+    const keywordScore =
+      job.keywords.length === 0
+        ? 0
+        : matchedKeywords.length / job.keywords.length;
+    const hardScore = this.averageMatchScore(
+      hardRequirementResults.map((result) => result.status),
+      hardRequirementResults.length === 0 ? 1 : 0,
+    );
+    const score = Math.max(
+      0,
+      Math.min(
+        100,
+        Math.round(
+          (keywordScore * 0.45 + requirementScore * 0.35 + hardScore * 0.2) *
+            100 -
+            (blockedByHardRequirements ? 25 : 0),
+        ),
+      ),
+    );
+    const filterStatus: StandardizedJob['filterStatus'] =
+      blockedByHardRequirements ? 'blocked' : score >= 55 ? 'pass' : 'review';
+    const match = {
+      score,
+      level: this.toJobMatchLevel(score),
+      matchedKeywords,
+      missingKeywords,
+      hardRequirementResults,
+      blockedByHardRequirements,
+      reasons: this.buildJobMatchReasons(
+        score,
+        matchedKeywords,
+        missingKeywords,
+        hardRequirementResults,
+      ),
+    } satisfies JobMatchReport;
+
+    return {
+      ...job,
+      filterStatus,
+      match,
+      warnings: blockedByHardRequirements
+        ? [...job.warnings, '存在未满足硬门槛，建议降级或过滤。']
+        : job.warnings,
+    };
+  }
+
+  private matchHardRequirement(
+    resume: ParsedResume,
+    requirement: HardRequirement,
+  ): HardRequirementMatch {
+    const resumeLines = this.toLines(resume.rawText);
+    const requirementKeywords = this.extractKeywords(requirement.text);
+    const evidence = this.findEvidenceLinesForKeywords(
+      resumeLines,
+      requirementKeywords,
+    );
+
+    if (requirement.type === 'education') {
+      const requiredLevel = this.extractEducationLevel(requirement.text);
+      const resumeLevel = this.extractEducationLevel(resume.rawText);
+
+      if (requiredLevel > 0 && resumeLevel >= requiredLevel) {
+        return { ...requirement, status: 'matched', evidence };
+      }
+
+      if (resume.extracted.education.length > 0) {
+        return {
+          ...requirement,
+          status: 'partial',
+          evidence:
+            evidence.length > 0
+              ? evidence
+              : resume.extracted.education.slice(0, 2),
+        };
+      }
+
+      return { ...requirement, status: 'missing', evidence: [] };
+    }
+
+    if (requirement.type === 'experience') {
+      const requiredYears = this.extractMaxYears(requirement.text);
+      const resumeYears = this.extractMaxYears(resume.rawText);
+
+      if (requiredYears > 0 && resumeYears >= requiredYears) {
+        return { ...requirement, status: 'matched', evidence };
+      }
+
+      if (resumeYears > 0 || evidence.length > 0) {
+        return { ...requirement, status: 'partial', evidence };
+      }
+
+      return { ...requirement, status: 'missing', evidence: [] };
+    }
+
+    if (requirement.type === 'skill' && requirementKeywords.length > 0) {
+      const matchedKeywordCount = requirementKeywords.filter((keyword) =>
+        resume.rawText.toLowerCase().includes(keyword.toLowerCase()),
+      ).length;
+      const ratio = matchedKeywordCount / requirementKeywords.length;
+
+      if (ratio >= 0.6) {
+        return { ...requirement, status: 'matched', evidence };
+      }
+
+      if (matchedKeywordCount > 0) {
+        return { ...requirement, status: 'partial', evidence };
+      }
+
+      return { ...requirement, status: 'missing', evidence: [] };
+    }
+
+    if (evidence.length > 0) {
+      return { ...requirement, status: 'matched', evidence };
+    }
+
+    return { ...requirement, status: 'missing', evidence: [] };
+  }
+
+  private isBlockingHardRequirement(result: HardRequirementMatch): boolean {
+    return (
+      result.status === 'missing' &&
+      ['education', 'experience', 'location', 'language', 'skill'].includes(
+        result.type,
+      )
+    );
+  }
+
+  private averageMatchScore(
+    statuses: Array<'matched' | 'partial' | 'missing'>,
+    emptyScore = 0,
+  ): number {
+    if (statuses.length === 0) {
+      return emptyScore;
+    }
+
+    const total = statuses.reduce((sum, status) => {
+      if (status === 'matched') {
+        return sum + 1;
+      }
+
+      if (status === 'partial') {
+        return sum + 0.5;
+      }
+
+      return sum;
+    }, 0);
+
+    return total / statuses.length;
+  }
+
+  private buildJobMatchReasons(
+    score: number,
+    matchedKeywords: string[],
+    missingKeywords: string[],
+    hardRequirementResults: HardRequirementMatch[],
+  ): string[] {
+    const missingHardRequirements = hardRequirementResults.filter(
+      (result) => result.status === 'missing',
+    );
+
+    return [
+      `综合匹配分 ${score}，已匹配 ${matchedKeywords.length} 个 JD 关键词。`,
+      missingKeywords.length > 0
+        ? `缺口关键词：${missingKeywords.slice(0, 6).join('、')}。`
+        : '关键 JD 关键词均已在简历中找到证据。',
+      missingHardRequirements.length > 0
+        ? `未满足硬门槛：${missingHardRequirements
+            .slice(0, 3)
+            .map((item) => item.text)
+            .join('；')}`
+        : '未发现阻断型硬门槛缺口。',
+    ];
+  }
+
+  private getJobStatusSortWeight(job: StandardizedJob): number {
+    if (job.status === 'ready') {
+      return 0;
+    }
+
+    if (job.status === 'duplicate') {
+      return 2;
+    }
+
+    return 3;
+  }
+
+  private getJobFilterSortWeight(job: StandardizedJob): number {
+    if (job.filterStatus === 'blocked') {
+      return 1;
+    }
+
+    return 0;
+  }
+
+  private toJobMatchLevel(score: number): JobMatchReport['level'] {
+    if (score >= 75) {
+      return 'high';
+    }
+
+    if (score >= 50) {
+      return 'medium';
+    }
+
+    if (score >= 25) {
+      return 'low';
+    }
+
+    return 'unmatched';
+  }
+
+  private normalizeComparisonToken(value: string): string {
+    return value.replace(/[^\p{L}\p{N}+#./-]+/gu, '').toLowerCase();
+  }
+
+  private jaccardSimilarity(left: string[], right: string[]): number {
+    const leftSet = new Set(
+      left.map((value) => this.normalizeComparisonToken(value)).filter(Boolean),
+    );
+    const rightSet = new Set(
+      right
+        .map((value) => this.normalizeComparisonToken(value))
+        .filter(Boolean),
+    );
+
+    if (leftSet.size === 0 || rightSet.size === 0) {
+      return 0;
+    }
+
+    const intersection = Array.from(leftSet).filter((value) =>
+      rightSet.has(value),
+    ).length;
+    const union = new Set([...leftSet, ...rightSet]).size;
+
+    return intersection / union;
+  }
+
+  private findEvidenceLinesForKeywords(
+    lines: string[],
+    keywords: string[],
+  ): string[] {
+    if (keywords.length === 0) {
+      return [];
+    }
+
+    return lines
+      .filter((line) =>
+        keywords.some((keyword) =>
+          line.toLowerCase().includes(keyword.toLowerCase()),
+        ),
+      )
+      .slice(0, 3);
+  }
+
+  private extractEducationLevel(text: string): number {
+    if (/博士|phd/i.test(text)) {
+      return 3;
+    }
+
+    if (/硕士|master/i.test(text)) {
+      return 2;
+    }
+
+    if (/本科|bachelor/i.test(text)) {
+      return 1;
+    }
+
+    return 0;
+  }
+
+  private extractMaxYears(text: string): number {
+    const years = Array.from(text.matchAll(/(\d+)\s*年/g)).map((match) =>
+      Number(match[1]),
+    );
+
+    return years.length > 0 ? Math.max(...years) : 0;
+  }
+
   private parseSafeJobUrl(
     value: string,
   ): { ok: true; url: URL } | { ok: false; message: string } {
@@ -649,6 +1118,10 @@ export class ResumeService {
   private extractHardRequirements(jd: ParsedJobDescription): HardRequirement[] {
     return jd.requirements
       .flatMap((requirement): HardRequirement[] => {
+        if (requirement.type === 'preferred') {
+          return [];
+        }
+
         const text = requirement.text;
         const hardRequirements: HardRequirement[] = [];
 
