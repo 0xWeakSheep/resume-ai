@@ -111,6 +111,26 @@ const PROFILE_HEADING_PATTERN =
 const ROLE_ONLY_LINE_PATTERN =
   /^[\p{L}\p{N} .·()（）&+/,-]{2,60}\s*(?:\||｜|—|–|-)\s*(?:核心成员|成员|负责人|创始人|联合创始人|实习生|工程师|开发者|研究员|产品经理|顾问|leader|member|founder|engineer|developer|researcher|intern)\s*$/iu;
 
+interface ModelRewriteBullet {
+  after: string;
+  reason?: string;
+}
+
+interface ModelRewriteOutput {
+  tailoredSummary?: string[];
+  rewrittenExperienceBullets?: ModelRewriteBullet[];
+  skillsToEmphasize?: string[];
+  modificationReasons?: string[];
+}
+
+interface DeepSeekChatResponse {
+  choices?: Array<{
+    message?: {
+      content?: string;
+    };
+  }>;
+}
+
 @Injectable()
 export class ResumeService {
   async customize(body: unknown): Promise<ResumeCustomizeResponse> {
@@ -146,7 +166,7 @@ export class ResumeService {
       requirementMappings,
       missingKeywords,
     );
-    const rewrite = this.buildRewrite(
+    const rewrite = await this.buildRewrite(
       parsedResume,
       parsedJobDescription,
       requirementMappings,
@@ -1218,13 +1238,13 @@ export class ResumeService {
     });
   }
 
-  private buildRewrite(
+  private async buildRewrite(
     resume: ParsedResume,
     jd: ParsedJobDescription,
     mappings: RequirementMapping[],
     matchedKeywords: string[],
     factBase: CareerFactBase,
-  ): ResumeCustomizeResponse['rewrite'] {
+  ): Promise<ResumeCustomizeResponse['rewrite']> {
     const strongEvidence = mappings
       .filter((mapping) => mapping.status !== 'missing')
       .flatMap((mapping) => mapping.evidence)
@@ -1278,7 +1298,7 @@ export class ResumeService {
       matchedKeywords,
     );
 
-    return {
+    const deterministicRewrite: ResumeCustomizeResponse['rewrite'] = {
       targetRole: jd.roleTitle,
       tailoredSummary,
       rewrittenExperienceBullets,
@@ -1292,6 +1312,232 @@ export class ResumeService {
       ),
       modificationReasons,
     };
+
+    return this.refineRewriteWithModel(
+      deterministicRewrite,
+      jd,
+      matchedKeywords,
+      sourceFacts,
+    );
+  }
+
+  private async refineRewriteWithModel(
+    baseRewrite: ResumeCustomizeResponse['rewrite'],
+    jd: ParsedJobDescription,
+    matchedKeywords: string[],
+    sourceFacts: SourceFactReference[],
+  ): Promise<ResumeCustomizeResponse['rewrite']> {
+    const apiKey = process.env.DEEPSEEK_API_KEY?.trim();
+    if (!apiKey || baseRewrite.rewrittenExperienceBullets.length === 0) {
+      return baseRewrite;
+    }
+
+    const modelOutput = await this.requestModelRewrite(
+      apiKey,
+      baseRewrite,
+      jd,
+      matchedKeywords,
+      sourceFacts,
+    ).catch(() => null);
+    if (!modelOutput) {
+      return baseRewrite;
+    }
+
+    const tailoredSummary =
+      this.pickStringArray(modelOutput.tailoredSummary, 4) ??
+      baseRewrite.tailoredSummary;
+    const skillsToEmphasize = this.unique([
+      ...(this.pickStringArray(modelOutput.skillsToEmphasize, 10) ?? []),
+      ...baseRewrite.skillsToEmphasize,
+    ]).slice(0, 10);
+    const modelBullets = modelOutput.rewrittenExperienceBullets ?? [];
+    const rewrittenExperienceBullets =
+      baseRewrite.rewrittenExperienceBullets.map((suggestion, index) => {
+        const modelBullet = modelBullets[index];
+        const after =
+          modelBullet?.after && !this.isNonEvidenceLine(modelBullet.after)
+            ? modelBullet.after.trim()
+            : suggestion.after;
+        const risk = this.assessRewriteRisk(
+          suggestion.before,
+          after,
+          suggestion.sourceFactIds,
+          undefined,
+        );
+
+        return {
+          ...suggestion,
+          after,
+          reason: modelBullet?.reason?.trim() || suggestion.reason,
+          ...risk,
+        } satisfies RewriteSuggestion;
+      });
+    const modificationReasons = this.unique([
+      ...(this.pickStringArray(modelOutput.modificationReasons, 6) ?? []),
+      ...baseRewrite.modificationReasons,
+    ]).slice(0, 8);
+
+    return {
+      ...baseRewrite,
+      tailoredSummary,
+      rewrittenExperienceBullets,
+      skillsToEmphasize,
+      finalResumeMarkdown: this.buildFinalResumeMarkdown(
+        jd,
+        tailoredSummary,
+        rewrittenExperienceBullets,
+        skillsToEmphasize,
+      ),
+      modificationReasons,
+    };
+  }
+
+  private async requestModelRewrite(
+    apiKey: string,
+    baseRewrite: ResumeCustomizeResponse['rewrite'],
+    jd: ParsedJobDescription,
+    matchedKeywords: string[],
+    sourceFacts: SourceFactReference[],
+  ): Promise<ModelRewriteOutput | null> {
+    const baseUrl = (
+      process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com'
+    ).replace(/\/$/, '');
+    const model = process.env.DEEPSEEK_MODEL ?? 'deepseek-chat';
+    const response = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.2,
+        response_format: { type: 'json_object' },
+        messages: [
+          {
+            role: 'system',
+            content:
+              '你是严谨的中文简历编辑。只基于给定事实改写，不编造公司、时间、学历、指标或职责。输出必须是 JSON，不要 Markdown 代码块。',
+          },
+          {
+            role: 'user',
+            content: JSON.stringify({
+              task: '润色 JD 定向简历最终稿。保留事实边界，删除联系方式、个人抬头、组织身份碎片和技能列表碎片。',
+              outputSchema: {
+                tailoredSummary: ['string'],
+                rewrittenExperienceBullets: [
+                  {
+                    after: 'string',
+                    reason: 'string',
+                  },
+                ],
+                skillsToEmphasize: ['string'],
+                modificationReasons: ['string'],
+              },
+              targetRole: jd.roleTitle,
+              jobDescription: jd.rawText.slice(0, 6000),
+              matchedKeywords,
+              sourceFacts,
+              currentRewrite: {
+                tailoredSummary: baseRewrite.tailoredSummary,
+                rewrittenExperienceBullets:
+                  baseRewrite.rewrittenExperienceBullets.map((suggestion) => ({
+                    before: suggestion.before,
+                    after: suggestion.after,
+                    sourceFactIds: suggestion.sourceFactIds,
+                    riskLevel: suggestion.riskLevel,
+                  })),
+                skillsToEmphasize: baseRewrite.skillsToEmphasize,
+              },
+            }),
+          },
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const payload = (await response.json()) as DeepSeekChatResponse;
+    const content = payload.choices?.[0]?.message?.content;
+    if (!content) {
+      return null;
+    }
+
+    return this.parseModelRewriteOutput(content);
+  }
+
+  private parseModelRewriteOutput(content: string): ModelRewriteOutput | null {
+    try {
+      const cleaned = content
+        .trim()
+        .replace(/^```(?:json)?/i, '')
+        .replace(/```$/i, '')
+        .trim();
+      const parsed = JSON.parse(cleaned) as unknown;
+      if (!this.isRecord(parsed)) {
+        return null;
+      }
+
+      return {
+        tailoredSummary: this.pickStringArray(parsed.tailoredSummary, 4),
+        rewrittenExperienceBullets: this.pickModelRewriteBullets(
+          parsed.rewrittenExperienceBullets,
+        ),
+        skillsToEmphasize: this.pickStringArray(parsed.skillsToEmphasize, 10),
+        modificationReasons: this.pickStringArray(
+          parsed.modificationReasons,
+          8,
+        ),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private pickModelRewriteBullets(value: unknown): ModelRewriteBullet[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value
+      .map((item): ModelRewriteBullet | null => {
+        if (!this.isRecord(item) || typeof item.after !== 'string') {
+          return null;
+        }
+
+        const after = item.after.trim();
+        if (!after) {
+          return null;
+        }
+
+        return {
+          after,
+          reason:
+            typeof item.reason === 'string' ? item.reason.trim() : undefined,
+        };
+      })
+      .filter((item): item is ModelRewriteBullet => Boolean(item))
+      .slice(0, 6);
+  }
+
+  private pickStringArray(value: unknown, limit: number): string[] | undefined {
+    if (!Array.isArray(value)) {
+      return undefined;
+    }
+
+    const strings = value
+      .filter((item): item is string => typeof item === 'string')
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .slice(0, limit);
+
+    return strings.length > 0 ? strings : undefined;
+  }
+
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
   }
 
   private assessRewriteRisk(
