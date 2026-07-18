@@ -1044,8 +1044,11 @@ export class ResumeService {
   }
 
   private detectRoleTitle(text: string): string {
-    const firstLine = this.toLines(text)[0] ?? '';
-    const titleMatch = firstLine.match(
+    const lines = this.toLines(text);
+    const firstLine = lines[0] ?? '';
+    const titleLine =
+      lines.find((line) => /(岗位|职位|招聘)[:：\s]/.test(line)) ?? firstLine;
+    const titleMatch = titleLine.match(
       /(岗位|职位|招聘)[:：\s]*(?<title>[^，,。；;\n]{2,40})/,
     );
 

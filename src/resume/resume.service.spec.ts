@@ -123,6 +123,7 @@ describe('ResumeService', () => {
       roleTitle: 'AI 产品经理',
     });
     expect(result.jobs[1].company).toBe('某 AI SaaS 公司');
+    expect(result.jobs[1].roleTitle).toBe('增长产品经理');
     expect(result.jobs[1].hardRequirements.length).toBeGreaterThan(0);
     expect(result.jobs[2].status).toBe('duplicate');
     expect(result.jobs[3].warnings.join('\n')).toContain('内网或本机地址');
