@@ -1,6 +1,7 @@
 import { Body, Controller, Post } from '@nestjs/common';
 import { ResumeService } from './resume.service';
 import type {
+  JobStandardizeResponse,
   ResumeCustomizeResponse,
   ResumeFactResponse,
 } from './resume.types';
@@ -17,5 +18,10 @@ export class ResumeController {
   @Post('facts')
   facts(@Body() body: unknown): Promise<ResumeFactResponse> {
     return this.resumeService.extractFacts(body);
+  }
+
+  @Post('jobs/standardize')
+  standardizeJobs(@Body() body: unknown): Promise<JobStandardizeResponse> {
+    return this.resumeService.standardizeJobs(body);
   }
 }

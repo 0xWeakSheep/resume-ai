@@ -1,15 +1,21 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import mammoth from 'mammoth';
+import { isIP } from 'node:net';
 import { PDFParse } from 'pdf-parse';
 import type {
   CareerFact,
   CareerFactBase,
   CareerFactCategory,
+  HardRequirement,
+  JobInputSource,
   JobRequirement,
+  JobStandardizeRequest,
+  JobStandardizeResponse,
   ParsedJobDescription,
   ParsedResume,
   QualityReport,
   RequirementMapping,
+  StandardizedJob,
   ResumeCustomizeRequest,
   ResumeCustomizeResponse,
   ResumeFactResponse,
@@ -83,6 +89,7 @@ const REQUIREMENT_PREFIX =
   /^(\d+[).、]|[-*•·]|[（(]?\d+[）)]|职责[:：]|要求[:：])\s*/;
 const METRIC_PATTERN =
   /\d+(?:\.\d+)?\s*(?:%|人|天|周|月|年|倍|万|k|K|次|小时|h|ms|s)?/g;
+const URL_FETCH_TIMEOUT_MS = 5000;
 
 @Injectable()
 export class ResumeService {
@@ -166,12 +173,112 @@ export class ResumeService {
     };
   }
 
+  async standardizeJobs(body: unknown): Promise<JobStandardizeResponse> {
+    const request = this.parseJobStandardizeRequest(body);
+    const sources = this.collectJobSources(request);
+    const seenSources = new Set<string>();
+    const jobs: StandardizedJob[] = [];
+
+    for (const source of sources) {
+      const sourceKey = `${source.type}:${source.value.trim().toLowerCase()}`;
+      const id = `JOB-${jobs.length + 1}`;
+
+      if (seenSources.has(sourceKey)) {
+        jobs.push(
+          this.buildFailedStandardizedJob(
+            id,
+            source,
+            'duplicate',
+            '重复输入，已跳过处理。',
+          ),
+        );
+        continue;
+      }
+      seenSources.add(sourceKey);
+
+      if (source.type === 'text') {
+        jobs.push(this.standardizeJobText(id, source, source.value));
+        continue;
+      }
+
+      jobs.push(await this.standardizeJobUrl(id, source));
+    }
+
+    return {
+      jobs,
+      summary: {
+        total: jobs.length,
+        ready: jobs.filter((job) => job.status === 'ready').length,
+        failed: jobs.filter((job) => job.status === 'failed').length,
+        duplicate: jobs.filter((job) => job.status === 'duplicate').length,
+      },
+    };
+  }
+
   private parseRequest(body: unknown): ResumeCustomizeRequest {
     if (body === null || typeof body !== 'object' || Array.isArray(body)) {
       throw new BadRequestException('Request body must be a JSON object.');
     }
 
     return body;
+  }
+
+  private parseJobStandardizeRequest(body: unknown): JobStandardizeRequest {
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+      throw new BadRequestException('Request body must be a JSON object.');
+    }
+
+    return body;
+  }
+
+  private collectJobSources(request: JobStandardizeRequest): JobInputSource[] {
+    const sources: JobInputSource[] = [];
+    const addText = (value: unknown): void => {
+      if (typeof value !== 'string') {
+        return;
+      }
+
+      const normalized = this.normalizeText(value);
+      if (!normalized) {
+        return;
+      }
+
+      sources.push({ type: 'text', value: normalized });
+    };
+    const addUrl = (value: unknown): void => {
+      if (typeof value !== 'string') {
+        return;
+      }
+
+      const normalized = value.trim();
+      if (!normalized) {
+        return;
+      }
+
+      sources.push({ type: 'url', value: normalized });
+    };
+
+    addText(request.jobDescription);
+    request.jobDescriptions?.forEach(addText);
+    request.jobUrls?.forEach(addUrl);
+    request.sources?.forEach((source) => {
+      if (source.type === 'text') {
+        addText(source.value);
+        return;
+      }
+
+      if (source.type === 'url') {
+        addUrl(source.value);
+      }
+    });
+
+    if (sources.length === 0) {
+      throw new BadRequestException(
+        'At least one JD text or URL source is required.',
+      );
+    }
+
+    return sources.slice(0, 20);
   }
 
   private async resolveResumeText(
@@ -361,6 +468,220 @@ export class ResumeService {
       keywords,
       criticalKeywords: keywords.slice(0, 8),
     };
+  }
+
+  private standardizeJobText(
+    id: string,
+    source: JobInputSource,
+    rawText: string,
+  ): StandardizedJob {
+    try {
+      const parsedJobDescription = this.parseJobDescription(rawText);
+      const normalizedText = parsedJobDescription.rawText;
+
+      return {
+        id,
+        sourceType: source.type,
+        source: source.value,
+        status: 'ready',
+        roleTitle: parsedJobDescription.roleTitle,
+        company: this.detectCompany(normalizedText),
+        rawText,
+        normalizedText,
+        requirements: parsedJobDescription.requirements,
+        keywords: parsedJobDescription.keywords,
+        criticalKeywords: parsedJobDescription.criticalKeywords,
+        hardRequirements: this.extractHardRequirements(parsedJobDescription),
+        warnings: [],
+      };
+    } catch (error) {
+      return this.buildFailedStandardizedJob(
+        id,
+        source,
+        'failed',
+        error instanceof Error ? error.message : 'JD 标准化失败。',
+      );
+    }
+  }
+
+  private async standardizeJobUrl(
+    id: string,
+    source: JobInputSource,
+  ): Promise<StandardizedJob> {
+    const safeUrl = this.parseSafeJobUrl(source.value);
+    if (!safeUrl.ok) {
+      return this.buildFailedStandardizedJob(
+        id,
+        source,
+        'failed',
+        safeUrl.message,
+      );
+    }
+
+    try {
+      const rawText = await this.fetchJobUrlText(safeUrl.url);
+      return this.standardizeJobText(id, source, rawText);
+    } catch (error) {
+      return this.buildFailedStandardizedJob(
+        id,
+        source,
+        'failed',
+        error instanceof Error ? error.message : 'JD 页面抓取失败。',
+      );
+    }
+  }
+
+  private buildFailedStandardizedJob(
+    id: string,
+    source: JobInputSource,
+    status: StandardizedJob['status'],
+    warning: string,
+  ): StandardizedJob {
+    return {
+      id,
+      sourceType: source.type,
+      source: source.value,
+      status,
+      roleTitle: '未识别岗位',
+      rawText: '',
+      normalizedText: '',
+      requirements: [],
+      keywords: [],
+      criticalKeywords: [],
+      hardRequirements: [],
+      warnings: [warning],
+    };
+  }
+
+  private parseSafeJobUrl(
+    value: string,
+  ): { ok: true; url: URL } | { ok: false; message: string } {
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      return { ok: false, message: 'JD 链接格式不合法。' };
+    }
+
+    if (!['http:', 'https:'].includes(url.protocol)) {
+      return { ok: false, message: 'JD 链接仅支持 HTTP/HTTPS。' };
+    }
+
+    if (this.isBlockedFetchHost(url.hostname)) {
+      return { ok: false, message: '出于安全限制，不能抓取内网或本机地址。' };
+    }
+
+    return { ok: true, url };
+  }
+
+  private isBlockedFetchHost(hostname: string): boolean {
+    const normalized = hostname.toLowerCase();
+    if (['localhost', '0.0.0.0'].includes(normalized)) {
+      return true;
+    }
+
+    if (normalized.endsWith('.local')) {
+      return true;
+    }
+
+    if (isIP(normalized) === 0) {
+      return false;
+    }
+
+    return (
+      normalized.startsWith('10.') ||
+      normalized.startsWith('127.') ||
+      normalized.startsWith('169.254.') ||
+      normalized.startsWith('192.168.') ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(normalized) ||
+      normalized === '::1'
+    );
+  }
+
+  private async fetchJobUrlText(url: URL): Promise<string> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), URL_FETCH_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(url, {
+        headers: {
+          'user-agent':
+            'ResumeAI/0.1 (+https://github.com/0xWeakSheep/resume-ai)',
+        },
+        redirect: 'follow',
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        throw new Error(`JD 页面抓取失败：${response.status}`);
+      }
+
+      const text = await response.text();
+      return this.htmlToText(text);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private htmlToText(value: string): string {
+    return this.normalizeText(
+      value
+        .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<[^>]+>/g, '\n')
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/&amp;/gi, '&')
+        .replace(/&lt;/gi, '<')
+        .replace(/&gt;/gi, '>')
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;/gi, "'"),
+    );
+  }
+
+  private detectCompany(text: string): string | undefined {
+    const companyMatch = text.match(
+      /(?:公司|企业|雇主|Company)[:：\s]*(?<company>[^，,。；;\n]{2,40})/i,
+    );
+
+    return companyMatch?.groups?.company?.trim();
+  }
+
+  private extractHardRequirements(jd: ParsedJobDescription): HardRequirement[] {
+    return jd.requirements
+      .flatMap((requirement): HardRequirement[] => {
+        const text = requirement.text;
+        const hardRequirements: HardRequirement[] = [];
+
+        if (/本科|硕士|博士|学历|bachelor|master|phd/i.test(text)) {
+          hardRequirements.push({ type: 'education', text });
+        }
+
+        if (/\d+\s*年|经验|experience/i.test(text)) {
+          hardRequirements.push({ type: 'experience', text });
+        }
+
+        if (/北京|上海|深圳|广州|杭州|成都|远程|onsite|remote/i.test(text)) {
+          hardRequirements.push({ type: 'location', text });
+        }
+
+        if (/英语|日语|语言|english|japanese|ielts|toefl/i.test(text)) {
+          hardRequirements.push({ type: 'language', text });
+        }
+
+        if (
+          requirement.keywords.length > 0 &&
+          /必须|熟悉|掌握|required|must/i.test(text)
+        ) {
+          hardRequirements.push({ type: 'skill', text });
+        }
+
+        if (hardRequirements.length === 0 && requirement.type === 'required') {
+          hardRequirements.push({ type: 'other', text });
+        }
+
+        return hardRequirements;
+      })
+      .slice(0, 12);
   }
 
   private mapRequirements(

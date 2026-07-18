@@ -67,6 +67,50 @@ export interface ResumeFactResponse {
   factBase: CareerFactBase;
 }
 
+export interface JobInputSource {
+  type: 'text' | 'url';
+  value: string;
+}
+
+export interface JobStandardizeRequest {
+  jobDescription?: string;
+  jobDescriptions?: string[];
+  jobUrls?: string[];
+  sources?: JobInputSource[];
+}
+
+export interface HardRequirement {
+  type:
+    'education' | 'experience' | 'location' | 'language' | 'skill' | 'other';
+  text: string;
+}
+
+export interface StandardizedJob {
+  id: string;
+  sourceType: JobInputSource['type'];
+  source: string;
+  status: 'ready' | 'failed' | 'duplicate';
+  roleTitle: string;
+  company?: string;
+  rawText: string;
+  normalizedText: string;
+  requirements: JobRequirement[];
+  keywords: string[];
+  criticalKeywords: string[];
+  hardRequirements: HardRequirement[];
+  warnings: string[];
+}
+
+export interface JobStandardizeResponse {
+  jobs: StandardizedJob[];
+  summary: {
+    total: number;
+    ready: number;
+    failed: number;
+    duplicate: number;
+  };
+}
+
 export interface ParsedJobDescription {
   rawText: string;
   roleTitle: string;

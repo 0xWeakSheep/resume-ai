@@ -97,6 +97,37 @@ describe('ResumeService', () => {
     );
   });
 
+  it('standardizes multiple JD sources and isolates failures', async () => {
+    const result = await service.standardizeJobs({
+      jobDescriptions: [
+        SAMPLE_JD,
+        `
+公司：某 AI SaaS 公司
+岗位：增长产品经理
+1. 本科及以上学历，3 年以上 B端 SaaS 增长经验。
+2. 熟悉 SQL 和数据分析，必须能推动 A/B测试。
+`,
+        SAMPLE_JD,
+      ],
+      jobUrls: ['http://localhost:4000/private-job'],
+    });
+
+    expect(result.summary).toMatchObject({
+      total: 4,
+      ready: 2,
+      failed: 1,
+      duplicate: 1,
+    });
+    expect(result.jobs[0]).toMatchObject({
+      status: 'ready',
+      roleTitle: 'AI 产品经理',
+    });
+    expect(result.jobs[1].company).toBe('某 AI SaaS 公司');
+    expect(result.jobs[1].hardRequirements.length).toBeGreaterThan(0);
+    expect(result.jobs[2].status).toBe('duplicate');
+    expect(result.jobs[3].warnings.join('\n')).toContain('内网或本机地址');
+  });
+
   it('rejects empty resume input', async () => {
     await expect(
       service.customize({

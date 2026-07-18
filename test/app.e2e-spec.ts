@@ -92,6 +92,32 @@ AI 产品设计 / 需求分析 / 数据分析 / 跨团队协作
       });
   });
 
+  it('/api/v1/resume/jobs/standardize (POST)', async () => {
+    await request(app.getHttpServer())
+      .post('/api/v1/resume/jobs/standardize')
+      .send({
+        jobDescriptions: [
+          `
+公司：某 AI SaaS 公司
+岗位：AI 产品经理
+1. 本科及以上学历，3 年以上 AI 产品经验。
+2. 熟悉 RAG、LLM 和数据分析，能推动跨团队落地。
+`,
+        ],
+        jobUrls: ['http://localhost:4000/private-job'],
+      })
+      .expect(201)
+      .expect(({ body }: { body: Record<string, unknown> }) => {
+        expect(body).toHaveProperty('jobs');
+        expect(body).toHaveProperty('summary');
+        expect(body.summary).toMatchObject({
+          total: 2,
+          ready: 1,
+          failed: 1,
+        });
+      });
+  });
+
   afterEach(async () => {
     await app.close();
   });
