@@ -72,6 +72,31 @@ describe('ResumeService', () => {
     );
   });
 
+  it('extracts a structured career fact base with evidence', async () => {
+    const result = await service.extractFacts({
+      resume: { text: SAMPLE_RESUME },
+    });
+
+    expect(result.factBase.totalFacts).toBeGreaterThan(8);
+    expect(result.factBase.grouped.experience.length).toBeGreaterThan(0);
+    expect(
+      result.factBase.grouped.skill.some(
+        (fact) => fact.detail === 'AI' && fact.evidence.includes('AI'),
+      ),
+    ).toBe(true);
+    expect(
+      result.factBase.grouped.metric.some(
+        (fact) => fact.detail === '20%' && fact.confidence === 'high',
+      ),
+    ).toBe(true);
+    expect(result.factBase.facts[0]).toEqual(
+      expect.objectContaining({
+        id: expect.any(String) as string,
+        evidence: expect.any(String) as string,
+      }),
+    );
+  });
+
   it('rejects empty resume input', async () => {
     await expect(
       service.customize({

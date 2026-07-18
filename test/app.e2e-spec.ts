@@ -65,6 +65,33 @@ AI 产品设计 / 需求分析 / 数据分析 / 跨团队协作
       });
   });
 
+  it('/api/v1/resume/facts (POST)', async () => {
+    await request(app.getHttpServer())
+      .post('/api/v1/resume/facts')
+      .send({
+        resume: {
+          text: `
+项目经历
+- 负责 AI 客服工作台需求分析，推动 RAG 知识库检索上线。
+- 协作算法和研发团队优化推荐流程，试点效率提升 20%。
+教育经历
+某某大学 本科 信息管理
+核心能力
+AI 产品设计 / 需求分析 / 数据分析 / 跨团队协作
+`,
+        },
+      })
+      .expect(201)
+      .expect(({ body }: { body: Record<string, unknown> }) => {
+        expect(body).toHaveProperty('parsedResume');
+        expect(body).toHaveProperty('factBase');
+        expect(body.factBase).toMatchObject({
+          sourceType: 'plain-text',
+          totalFacts: expect.any(Number) as number,
+        });
+      });
+  });
+
   afterEach(async () => {
     await app.close();
   });

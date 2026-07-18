@@ -2,6 +2,9 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import mammoth from 'mammoth';
 import { PDFParse } from 'pdf-parse';
 import type {
+  CareerFact,
+  CareerFactBase,
+  CareerFactCategory,
   JobRequirement,
   ParsedJobDescription,
   ParsedResume,
@@ -9,6 +12,7 @@ import type {
   RequirementMapping,
   ResumeCustomizeRequest,
   ResumeCustomizeResponse,
+  ResumeFactResponse,
   ResumeFileKind,
   RewriteSuggestion,
   UploadedResumeFile,
@@ -139,6 +143,26 @@ export class ResumeService {
       },
       rewrite,
       quality,
+    };
+  }
+
+  async extractFacts(body: unknown): Promise<ResumeFactResponse> {
+    const request = this.parseRequest(body);
+    const resumeText = await this.resolveResumeText(request);
+    const answers = this.normalizeText(request.answers ?? '');
+    const parsedResume = this.parseResume(
+      answers
+        ? {
+            text: `${resumeText.text}\n\n补充信息\n${answers}`,
+            sourceType: resumeText.sourceType,
+          }
+        : resumeText,
+    );
+    const factBase = this.buildCareerFactBase(parsedResume);
+
+    return {
+      parsedResume,
+      factBase,
     };
   }
 
@@ -521,6 +545,122 @@ export class ResumeService {
     };
   }
 
+  private buildCareerFactBase(resume: ParsedResume): CareerFactBase {
+    const grouped: Record<CareerFactCategory, CareerFact[]> = {
+      profile: [],
+      experience: [],
+      education: [],
+      skill: [],
+      metric: [],
+      keyword: [],
+    };
+    const facts: CareerFact[] = [];
+    const addFact = (
+      category: CareerFactCategory,
+      title: string,
+      detail: string,
+      evidence: string,
+      confidence: CareerFact['confidence'],
+    ): void => {
+      const normalizedDetail = this.normalizeText(detail);
+      const normalizedEvidence = this.normalizeText(evidence);
+      if (!normalizedDetail || !normalizedEvidence) {
+        return;
+      }
+
+      const fact = {
+        id: `${category.toUpperCase()}-${grouped[category].length + 1}`,
+        category,
+        title,
+        detail: normalizedDetail,
+        evidence: normalizedEvidence,
+        confidence,
+      } satisfies CareerFact;
+
+      grouped[category].push(fact);
+      facts.push(fact);
+    };
+
+    const lines = this.toLines(resume.rawText);
+    const profileLines =
+      resume.sections.summary.length > 0
+        ? resume.sections.summary
+        : lines
+            .slice(0, 4)
+            .filter(
+              (line) =>
+                !SECTION_MATCHERS.some((item) => item.pattern.test(line)),
+            )
+            .filter((line) => !line.startsWith('-'));
+
+    profileLines.slice(0, 3).forEach((line, index) => {
+      addFact('profile', `基础信息 ${index + 1}`, line, line, 'medium');
+    });
+
+    resume.extracted.experienceBullets.slice(0, 12).forEach((bullet, index) => {
+      addFact(
+        'experience',
+        `经历事实 ${index + 1}`,
+        bullet,
+        this.findEvidenceLine(lines, bullet),
+        'high',
+      );
+    });
+
+    resume.extracted.education.forEach((education, index) => {
+      addFact(
+        'education',
+        `教育经历 ${index + 1}`,
+        education,
+        this.findEvidenceLine(lines, education),
+        'high',
+      );
+    });
+
+    resume.extracted.skills.slice(0, 16).forEach((skill) => {
+      addFact(
+        'skill',
+        skill,
+        skill,
+        this.findEvidenceLine(lines, skill),
+        'medium',
+      );
+    });
+
+    this.unique(resume.rawText.match(METRIC_PATTERN) ?? [])
+      .slice(0, 12)
+      .forEach((metric) => {
+        addFact(
+          'metric',
+          metric,
+          metric,
+          this.findEvidenceLine(lines, metric),
+          'high',
+        );
+      });
+
+    resume.extracted.keywords
+      .filter((keyword) => !resume.extracted.skills.includes(keyword))
+      .slice(0, 16)
+      .forEach((keyword) => {
+        addFact(
+          'keyword',
+          keyword,
+          keyword,
+          this.findEvidenceLine(lines, keyword),
+          'low',
+        );
+      });
+
+    return {
+      sourceType: resume.sourceType,
+      totalFacts: facts.length,
+      facts,
+      grouped,
+      warnings: resume.warnings,
+    };
+  }
+
   private requireUsefulText(
     value: string | undefined,
     fieldName: string,
@@ -737,5 +877,19 @@ export class ResumeService {
     return Array.from(
       new Set(values.map((value) => value.trim()).filter(Boolean)),
     );
+  }
+
+  private findEvidenceLine(lines: string[], value: string): string {
+    const normalizedValue = this.stripBulletPrefix(value).toLowerCase();
+    const exact = lines.find((line) =>
+      line.toLowerCase().includes(normalizedValue),
+    );
+
+    if (exact) {
+      return exact;
+    }
+
+    const token = normalizedValue.split(/\s+/)[0] ?? normalizedValue;
+    return lines.find((line) => line.toLowerCase().includes(token)) ?? value;
   }
 }

@@ -15,6 +15,14 @@ export interface ResumeCustomizeRequest {
   answers?: string;
 }
 
+export interface ResumeFactRequest {
+  resume?: {
+    text?: string;
+    file?: UploadedResumeFile;
+  };
+  answers?: string;
+}
+
 export interface ParsedResume {
   sourceType: ResumeFileKind | 'plain-text';
   rawText: string;
@@ -32,6 +40,31 @@ export interface ParsedResume {
     keywords: string[];
   };
   warnings: string[];
+}
+
+export type CareerFactCategory =
+  'profile' | 'experience' | 'education' | 'skill' | 'metric' | 'keyword';
+
+export interface CareerFact {
+  id: string;
+  category: CareerFactCategory;
+  title: string;
+  detail: string;
+  evidence: string;
+  confidence: 'high' | 'medium' | 'low';
+}
+
+export interface CareerFactBase {
+  sourceType: ParsedResume['sourceType'];
+  totalFacts: number;
+  facts: CareerFact[];
+  grouped: Record<CareerFactCategory, CareerFact[]>;
+  warnings: string[];
+}
+
+export interface ResumeFactResponse {
+  parsedResume: ParsedResume;
+  factBase: CareerFactBase;
 }
 
 export interface ParsedJobDescription {
