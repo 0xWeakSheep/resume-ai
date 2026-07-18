@@ -1,6 +1,6 @@
 # resume-ai
 
-Resume AI 的 NestJS API。使用 TypeScript 严格模式，负责后续的材料处理、AI 任务、审核与交付流程。
+Resume AI 的 NestJS API。使用 TypeScript 严格模式，负责简历材料解析、JD 标准化、匹配分析、定制改写、质量检查与导出前审核数据。
 
 ## 本地开发
 
@@ -14,6 +14,9 @@ npm run start:dev
 
 - `GET /api/v1`：服务信息
 - `GET /api/v1/health`：健康检查
+- `POST /api/v1/resume/facts`：从简历文本或上传文件中抽取结构化职业事实库
+- `POST /api/v1/resume/jobs/standardize`：标准化 JD 文本/链接，完成去重、硬门槛过滤和匹配排序
+- `POST /api/v1/resume/customize`：基于职业事实和目标 JD 生成定制简历、改写理由和质量检查
 
 ## 可用命令
 
@@ -37,4 +40,9 @@ npm run start:prod
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | DeepSeek API 基础地址 |
 | `DEEPSEEK_MODEL` | `deepseek-chat` | 默认使用的 DeepSeek 模型 |
 
-后续按照 Linear `A10-9` 继续实现数据模型、任务管线、模型调用与交付后台。
+## 当前 MVP 能力
+
+- 文件优先：同时传入文件和文本时，优先解析上传文件。
+- 事实约束：生成内容只引用简历事实库和用户补充信息，不直接写入无法证明的能力。
+- JD 批处理：支持多个 JD 文本或链接输入，失败项不阻塞其他可用岗位。
+- 质量检查：返回关键词覆盖、事实一致性、可读性、格式检查和人工审核清单。
