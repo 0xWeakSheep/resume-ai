@@ -42,9 +42,14 @@ describe('AppController (e2e)', () => {
       .send({
         resume: {
           text: `
+张三
+邮箱：zhangsan@example.com
+某 AI 公司 | 产品经理
 项目经历
 - 负责 AI 客服工作台需求分析，推动 RAG 知识库检索上线。
 - 协作算法和研发团队优化推荐流程，试点效率提升 20%。
+教育经历
+某某大学 本科 信息管理
 核心能力
 AI 产品设计 / 需求分析 / 数据分析 / 跨团队协作
 `,
@@ -64,6 +69,49 @@ AI 产品设计 / 需求分析 / 数据分析 / 跨团队协作
         expect(body).toHaveProperty('quality');
         expect(body.rewrite).toMatchObject({
           sourceFacts: expect.any(Array) as unknown[],
+        });
+        const rewrite = body.rewrite as Record<string, unknown>;
+        const finalResumeMarkdown = rewrite.finalResumeMarkdown as string;
+
+        expect(finalResumeMarkdown).toContain('张三');
+        expect(finalResumeMarkdown).toContain('zhangsan@example.com');
+        expect(finalResumeMarkdown).toContain('某 AI 公司 | 产品经理');
+        expect(finalResumeMarkdown).toContain('某某大学 本科 信息管理');
+        expect(finalResumeMarkdown).not.toMatch(
+          /## 资料概览|生成边界|## 人工审核提示|可支撑目标岗位/,
+        );
+      });
+  });
+
+  it('/api/v1/resume/customize rejects a generic-only mapping (POST)', async () => {
+    await request(app.getHttpServer())
+      .post('/api/v1/resume/customize')
+      .send({
+        resume: {
+          text: `
+王五
+项目经历
+- 参与 AI 内容工具需求讨论，整理用户反馈并协作完成版本验收。
+核心能力
+AI
+`,
+        },
+        jobDescription: `
+岗位：业务策略经理
+1. 具备 AI 相关经验和能力。
+`,
+      })
+      .expect(201)
+      .expect(({ body }: { body: Record<string, unknown> }) => {
+        const analysis = body.analysis as Record<string, unknown>;
+        const mappings = analysis.requirementMappings as Array<
+          Record<string, unknown>
+        >;
+
+        expect(mappings[0]).toMatchObject({
+          status: 'missing',
+          matchedKeywords: [],
+          evidence: [],
         });
       });
   });

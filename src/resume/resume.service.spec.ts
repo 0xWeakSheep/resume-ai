@@ -32,6 +32,11 @@ Chainseclabs实验室 | 核心成员
 项目经历
 - 参与 Merkle Patricia Tree（MPT）与交易池（TxPool）设计，负责交易排序策略、节点同步流程和异常交易复现。
 - 设计 Web3 安全实验室内部漏洞复现流程，沉淀 Solidity 合约审计 checklist，并协作输出复盘报告。
+- 负责跨链交易加速流程优化，通过调整 Commit/Execute 流程缩短交易确认时间。
+- Commit/Execute 流程缩短交易确认时间。
+
+教育经历
+某某大学 本科 计算机科学
 
 核心能力
 Solidity / Web3 / EVM / MPT / TxPool / 安全审计
@@ -87,7 +92,11 @@ describe('ResumeService', () => {
           suggestion.riskLevel !== 'high' || !suggestion.acceptedByDefault,
       ),
     ).toBe(true);
-    expect(result.rewrite.finalResumeMarkdown).toContain('AI 产品经理');
+    expect(result.rewrite.finalResumeMarkdown).toContain('张三');
+    expect(result.rewrite.finalResumeMarkdown).toContain(
+      '某某大学 本科 信息管理',
+    );
+    expect(result.rewrite.finalResumeMarkdown).not.toContain('## 资料概览');
     expect(result.quality.keywordCoverage.ratio).toBeGreaterThan(0.4);
     expect(result.quality.factConsistency.riskLevel).toBe('low');
     expect(result.quality.manualReviewChecklist.length).toBeGreaterThanOrEqual(
@@ -203,7 +212,7 @@ describe('ResumeService', () => {
     expect(result.parsedResume.rawText).not.toContain('张三');
   });
 
-  it('keeps contact and role heading fragments out of final resume bullets', async () => {
+  it('keeps the complete original resume structure in the editable final resume', async () => {
     const result = await service.customize({
       resume: { text: BINANCE_STYLE_RESUME },
       jobDescription: BINANCE_STYLE_JD,
@@ -222,20 +231,178 @@ describe('ResumeService', () => {
         expect.stringContaining('Solidity'),
       ]),
     );
+    expect(finalMarkdown).toContain('oftiyf');
+    expect(finalMarkdown).toContain('邮箱：oftiyf@gmail.com');
+    expect(finalMarkdown).toContain('Chainseclabs实验室 | 核心成员');
+    expect(finalMarkdown).toContain('某某大学 本科 计算机科学');
     expect(finalMarkdown).toContain(
-      '# Binance - Binance Accelerator Program 简历定制版',
+      'Solidity / Web3 / EVM / MPT / TxPool / 安全审计',
     );
-    expect(finalMarkdown).toContain('## 资料概览');
-    expect(finalMarkdown).toContain('## 人工审核提示');
     expect(finalMarkdown).toContain('MPT');
     expect(finalMarkdown).toContain('TxPool');
     expect(finalMarkdown).not.toContain('定制简历草稿');
-    expect(finalMarkdown).not.toContain('邮箱');
-    expect(finalMarkdown).not.toContain('oftiyf@gmail.com');
-    expect(finalMarkdown).not.toContain('Chainseclabs实验室 | 核心成员');
+    expect(finalMarkdown).not.toContain('## 资料概览');
+    expect(finalMarkdown).not.toContain('生成边界');
+    expect(finalMarkdown).not.toContain('## 人工审核提示');
+    expect(finalMarkdown.match(/Commit\/Execute/g)).toHaveLength(1);
+    result.rewrite.rewrittenExperienceBullets
+      .filter(
+        (suggestion) =>
+          suggestion.acceptedByDefault && suggestion.riskLevel === 'low',
+      )
+      .forEach((suggestion) => {
+        expect(finalMarkdown).toContain(suggestion.after);
+      });
     expect(rewrittenText).not.toContain('邮箱');
     expect(rewrittenText).not.toContain('Chainseclabs实验室 | 核心成员');
     expect(result.rewrite.skillsToEmphasize).not.toContain('AI');
+  });
+
+  it('filters job-page navigation, privacy and benefits noise before mapping', async () => {
+    const result = await service.standardizeJobs({
+      jobDescriptions: [
+        `
+Binance Careers
+Sign in
+岗位：Blockchain Security Engineer
+Responsibilities
+- Build and maintain blockchain security analysis tooling.
+Qualifications
+- Must have Solidity and EVM experience.
+Benefits
+- Competitive salary and health insurance.
+Privacy Policy
+All rights reserved.
+`,
+      ],
+    });
+    const job = result.jobs[0];
+    const requirementText = job?.requirements
+      .map((requirement) => requirement.text)
+      .join('\n');
+
+    expect(job?.requirements).toHaveLength(2);
+    expect(requirementText).toContain('blockchain security analysis tooling');
+    expect(requirementText).toContain('Solidity and EVM experience');
+    expect(requirementText).not.toMatch(
+      /Sign in|Competitive salary|Privacy Policy|All rights reserved/i,
+    );
+  });
+
+  it('does not treat a single generic AI keyword as partial evidence', async () => {
+    const result = await service.customize({
+      resume: {
+        text: `
+王五
+项目经历
+- 参与 AI 内容工具需求讨论，整理用户反馈并协作完成版本验收。
+核心能力
+AI
+`,
+      },
+      jobDescription: `
+岗位：业务策略经理
+1. 具备 AI 相关经验和能力。
+`,
+    });
+    const mapping = result.analysis.requirementMappings[0];
+
+    expect(mapping).toMatchObject({
+      status: 'missing',
+      matchedKeywords: [],
+      evidence: [],
+    });
+  });
+
+  it('keeps a quantified skill requirement partial when years are unproven', async () => {
+    const result = await service.customize({
+      resume: { text: BINANCE_STYLE_RESUME },
+      jobDescription: `
+岗位：智能合约安全工程师
+1. 具备 3 年以上 Solidity 智能合约审计经验。
+`,
+    });
+
+    expect(result.analysis.requirementMappings[0]).toMatchObject({
+      status: 'partial',
+      matchedKeywords: expect.arrayContaining(['Solidity']) as string[],
+    });
+  });
+
+  it('does not promote unlimited, optional or preferred conditions to hard requirements', async () => {
+    const result = await service.standardizeJobs({
+      jobDescriptions: [
+        `
+岗位：Web3 研究员
+1. 学历不限，经验不限，可远程办公。
+2. 掌握 ERC-721 属于加分项，可选。
+3. 必须掌握 Solidity 与 EVM。
+`,
+      ],
+    });
+    const hardRequirements = result.jobs[0]?.hardRequirements ?? [];
+
+    expect(hardRequirements.length).toBeGreaterThan(0);
+    expect(
+      hardRequirements.every((item) => !/不限|加分|可选/.test(item.text)),
+    ).toBe(true);
+    expect(hardRequirements.some((item) => /Solidity/.test(item.text))).toBe(
+      true,
+    );
+  });
+
+  it('rejects model-injected skills and unsupported amplified claims', async () => {
+    const previousApiKey = process.env.DEEPSEEK_API_KEY;
+    process.env.DEEPSEEK_API_KEY = 'test-key';
+    const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  rewrittenExperienceBullets: [
+                    {
+                      sourceFactId: 'EXPERIENCE-1',
+                      after:
+                        '精通 ERC-721 与 ERC-20，具备大规模主网套利实战经验。',
+                      reason: '增强岗位匹配度',
+                    },
+                  ],
+                  skillsToEmphasize: ['ERC-721', 'ERC-20', 'Solidity'],
+                }),
+              },
+            },
+          ],
+        }),
+    } as Response);
+
+    try {
+      const result = await service.customize({
+        resume: { text: BINANCE_STYLE_RESUME },
+        jobDescription: BINANCE_STYLE_JD,
+      });
+      const output = [
+        result.rewrite.finalResumeMarkdown,
+        ...result.rewrite.rewrittenExperienceBullets.map(
+          (suggestion) => suggestion.after,
+        ),
+        ...result.rewrite.skillsToEmphasize,
+      ].join('\n');
+
+      expect(output).not.toContain('ERC-721');
+      expect(output).not.toContain('ERC-20');
+      expect(output).not.toContain('主网套利');
+      expect(result.rewrite.skillsToEmphasize).toContain('Solidity');
+    } finally {
+      fetchSpy.mockRestore();
+      if (previousApiKey === undefined) {
+        delete process.env.DEEPSEEK_API_KEY;
+      } else {
+        process.env.DEEPSEEK_API_KEY = previousApiKey;
+      }
+    }
   });
 
   it('standardizes multiple JD sources and isolates failures', async () => {

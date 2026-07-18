@@ -114,8 +114,54 @@ const PROFILE_HEADING_PATTERN =
   /^(姓名|邮箱|邮件|电话|手机|微信|wechat|telegram|github|linkedin|个人网站|地址|所在地|求职意向|个人信息)[:：\s]/i;
 const ROLE_ONLY_LINE_PATTERN =
   /^[\p{L}\p{N} .·()（）&+/,-]{2,60}\s*(?:\||｜|—|–|-)\s*(?:核心成员|成员|负责人|创始人|联合创始人|实习生|工程师|开发者|研究员|产品经理|顾问|leader|member|founder|engineer|developer|researcher|intern)\s*$/iu;
+const JD_NOISE_PATTERN =
+  /(?:cookie|privacy policy|terms of (?:use|service)|all rights reserved|equal opportunity|sign in|log in|register|subscribe|share this job|save job|apply now|job alert|related jobs|similar jobs|about us|contact us|隐私政策|隐私声明|用户协议|服务条款|版权所有|登录|注册|订阅|分享职位|收藏职位|立即申请|申请职位|职位提醒|相似职位|相关职位|联系我们|关于我们|扫码|二维码|下载\s*(?:app|客户端))/i;
+const JD_SECTION_BOUNDARY_PATTERN =
+  /^(?:福利待遇|薪资福利|我们提供|公司介绍|团队介绍|为什么加入我们|工作地点|申请方式|招聘流程|其他信息|benefits?|our benefits|employee benefits|what we offer|why (?:join us|binance)|working at binance|about (?:us|binance|the company|the team)|compensation|location|how to apply|equal opportunity)\s*[:：]?$/i;
+const JD_REQUIREMENT_SIGNAL_PATTERN =
+  /(?:负责|参与|协作|推动|设计|搭建|实现|开发|维护|优化|研究|分析|管理|支持|熟悉|掌握|具备|要求|必须|能够|能力|经验|学历|本科|硕士|博士|优先|加分|responsib|develop|build|design|implement|maintain|optimi[sz]e|research|analy[sz]e|manage|support|collaborat|participat|assist|proficien|familiar|knowledge|ability|skills?|experience|qualification|required|must|preferred|degree|bachelor|master|phd)/i;
+const SOFT_REQUIREMENT_PATTERN =
+  /(?:不限|无需|不要求|非必需|可选|可接受|优先|加分|nice to have|preferred|optional|not required|no requirement)/i;
+const EXPLICIT_HARD_REQUIREMENT_PATTERN =
+  /(?:必须|要求|需具备|至少|及以上|以上|不得|仅限|required|must|minimum|at least|\d+\s*\+\s*(?:years?|年))/i;
+const GENERIC_MATCH_KEYWORDS = new Set([
+  'AI',
+  'API',
+  '测试',
+  '自动化',
+  '数据分析',
+  '用户研究',
+  '产品设计',
+  '需求分析',
+  '项目管理',
+  '跨团队协作',
+  '增长',
+]);
+const KEYWORD_STOPWORDS = new Set([
+  'APP',
+  'CSS',
+  'FAQ',
+  'HTML',
+  'HTTP',
+  'HTTPS',
+  'HR',
+  'JD',
+  'JOB',
+  'SEO',
+  'UI',
+  'URL',
+  'UX',
+]);
+const UNSUPPORTED_CLAIM_PATTERN =
+  /精通|专家|丰富经验|多年经验|主导|独立负责|从\s*[0零]\s*到\s*1|从零|大规模|高并发|生产级|行业领先|显著提升|大幅提升|主网套利|实战套利/i;
+
+interface JobRequirementCandidate {
+  text: string;
+  typeHint?: JobRequirement['type'];
+}
 
 interface ModelRewriteBullet {
+  sourceFactId: string;
   after: string;
   reason?: string;
 }
@@ -341,6 +387,7 @@ export class ResumeService {
     const requirementMappings = this.mapRequirements(
       parsedResume,
       parsedJobDescription,
+      factBase,
     );
     const matchedKeywords = this.unique(
       requirementMappings.flatMap((mapping) => mapping.matchedKeywords),
@@ -749,16 +796,18 @@ export class ResumeService {
 
   private parseJobDescription(rawText: string): ParsedJobDescription {
     const normalized = this.requireUsefulText(rawText, 'jobDescription');
-    const lines = this.toRequirementLines(normalized);
-    const requirements = lines.slice(0, 18).map((line, index) => {
-      const cleanLine = line.replace(REQUIREMENT_PREFIX, '').trim();
-      const type = this.detectRequirementType(cleanLine);
+    const candidates = this.toRequirementCandidates(normalized);
+    const requirements = candidates.slice(0, 18).map((candidate, index) => {
+      const type = this.detectRequirementType(
+        candidate.text,
+        candidate.typeHint,
+      );
 
       return {
         id: `REQ-${index + 1}`,
-        text: cleanLine,
+        text: candidate.text,
         type,
-        keywords: this.extractKeywords(cleanLine),
+        keywords: this.extractKeywords(candidate.text),
       } satisfies JobRequirement;
     });
     const keywords = this.unique([
@@ -1515,37 +1564,61 @@ export class ResumeService {
   private extractHardRequirements(jd: ParsedJobDescription): HardRequirement[] {
     return jd.requirements
       .flatMap((requirement): HardRequirement[] => {
-        if (requirement.type === 'preferred') {
+        if (
+          requirement.type === 'preferred' ||
+          SOFT_REQUIREMENT_PATTERN.test(requirement.text)
+        ) {
           return [];
         }
 
         const text = requirement.text;
         const hardRequirements: HardRequirement[] = [];
+        const hasExplicitHardSignal =
+          EXPLICIT_HARD_REQUIREMENT_PATTERN.test(text);
 
-        if (/本科|硕士|博士|学历|bachelor|master|phd/i.test(text)) {
+        if (
+          hasExplicitHardSignal &&
+          /本科|硕士|博士|学历|bachelor|master|phd|degree/i.test(text)
+        ) {
           hardRequirements.push({ type: 'education', text });
         }
 
-        if (/\d+\s*年|经验|experience/i.test(text)) {
+        if (
+          hasExplicitHardSignal &&
+          /\d+\s*(?:年|years?)|经验|experience/i.test(text)
+        ) {
           hardRequirements.push({ type: 'experience', text });
         }
 
-        if (/北京|上海|深圳|广州|杭州|成都|远程|onsite|remote/i.test(text)) {
+        if (
+          hasExplicitHardSignal &&
+          /(?:工作地点|办公地点|常驻|驻场|位于|located in|based in|onsite)/i.test(
+            text,
+          )
+        ) {
           hardRequirements.push({ type: 'location', text });
         }
 
-        if (/英语|日语|语言|english|japanese|ielts|toefl/i.test(text)) {
+        if (
+          hasExplicitHardSignal &&
+          /英语|日语|语言|english|japanese|ielts|toefl/i.test(text)
+        ) {
           hardRequirements.push({ type: 'language', text });
         }
 
         if (
+          hasExplicitHardSignal &&
           requirement.keywords.length > 0 &&
-          /必须|熟悉|掌握|required|must/i.test(text)
+          /必须|熟悉|掌握|需具备|required|must|proficien|familiar/i.test(text)
         ) {
           hardRequirements.push({ type: 'skill', text });
         }
 
-        if (hardRequirements.length === 0 && requirement.type === 'required') {
+        if (
+          hardRequirements.length === 0 &&
+          requirement.type === 'required' &&
+          hasExplicitHardSignal
+        ) {
           hardRequirements.push({ type: 'other', text });
         }
 
@@ -1557,29 +1630,94 @@ export class ResumeService {
   private mapRequirements(
     resume: ParsedResume,
     jd: ParsedJobDescription,
+    factBase: CareerFactBase = this.buildCareerFactBase(resume),
   ): RequirementMapping[] {
-    const resumeLines = this.toLines(resume.rawText).filter(
-      (line) => !this.isNonEvidenceLine(line),
+    const traceableFacts = factBase.facts.filter(
+      (fact) =>
+        ['experience', 'skill', 'education'].includes(fact.category) &&
+        !this.isNonEvidenceLine(fact.evidence),
     );
-    const resumeKeywords = new Set(resume.extracted.keywords);
 
     return jd.requirements.map((requirement) => {
-      const matchedKeywords = requirement.keywords.filter((keyword) =>
-        resumeKeywords.has(keyword),
+      const keywordMatches = requirement.keywords.map((keyword) => ({
+        keyword,
+        facts: traceableFacts.filter((fact) =>
+          this.includesKeyword(`${fact.detail}\n${fact.evidence}`, keyword),
+        ),
+      }));
+      const rawSupportedMatches = keywordMatches.filter(
+        (match) => match.facts.length > 0,
       );
-      const evidence = resumeLines
-        .filter((line) =>
-          matchedKeywords.some((keyword) =>
-            this.includesKeyword(line, keyword),
+      const specificSupportedMatches = rawSupportedMatches.filter(
+        (match) => !GENERIC_MATCH_KEYWORDS.has(match.keyword),
+      );
+      const supportedMatches =
+        specificSupportedMatches.length === 0 && rawSupportedMatches.length < 2
+          ? []
+          : rawSupportedMatches;
+      const matchedKeywords = supportedMatches.map((match) => match.keyword);
+      const matchedFacts = Array.from(
+        new Map(
+          supportedMatches
+            .flatMap((match) => match.facts)
+            .map((fact) => [fact.id, fact] as const),
+        ).values(),
+      ).sort((left, right) => {
+        const categoryWeight = (fact: CareerFact): number =>
+          fact.category === 'experience'
+            ? 0
+            : fact.category === 'skill'
+              ? 1
+              : 2;
+        return categoryWeight(left) - categoryWeight(right);
+      });
+      const evidence = this.unique(
+        matchedFacts.map((fact) => fact.evidence),
+      ).slice(0, 3);
+      const keywordCoverage =
+        requirement.keywords.length === 0
+          ? 0
+          : matchedKeywords.length / requirement.keywords.length;
+      const specificMatchedKeywords = matchedKeywords.filter(
+        (keyword) => !GENERIC_MATCH_KEYWORDS.has(keyword),
+      );
+      const experienceFacts = matchedFacts.filter(
+        (fact) => fact.category === 'experience',
+      );
+      const maxKeywordsInExperience = experienceFacts.reduce(
+        (maximum, fact) =>
+          Math.max(
+            maximum,
+            matchedKeywords.filter((keyword) =>
+              this.includesKeyword(`${fact.detail}\n${fact.evidence}`, keyword),
+            ).length,
           ),
-        )
-        .slice(0, 3);
-      const status =
-        matchedKeywords.length >= 2 || evidence.length >= 2
-          ? 'matched'
-          : matchedKeywords.length === 1 || evidence.length === 1
-            ? 'partial'
-            : 'missing';
+        0,
+      );
+      const requiredYears = this.extractMaxYears(requirement.text);
+      const requiredEducation = this.extractEducationLevel(requirement.text);
+      const hasUnverifiedThreshold =
+        (requiredYears > 0 &&
+          this.extractMaxYears(resume.rawText) < requiredYears) ||
+        (requiredEducation > 0 &&
+          this.extractEducationLevel(resume.rawText) < requiredEducation);
+      const hasStrongSpecificEvidence =
+        specificMatchedKeywords.length > 0 &&
+        keywordCoverage >= 0.6 &&
+        (requirement.type !== 'responsibility' || experienceFacts.length > 0) &&
+        !hasUnverifiedThreshold;
+      const hasStrongGenericEvidence =
+        specificMatchedKeywords.length === 0 &&
+        matchedKeywords.length >= 2 &&
+        keywordCoverage >= 0.75 &&
+        maxKeywordsInExperience >= 2 &&
+        !hasUnverifiedThreshold;
+      const status: RequirementMapping['status'] =
+        matchedKeywords.length === 0
+          ? 'missing'
+          : hasStrongSpecificEvidence || hasStrongGenericEvidence
+            ? 'matched'
+            : 'partial';
 
       return {
         requirementId: requirement.id,
@@ -1621,24 +1759,25 @@ export class ResumeService {
     const rewrittenExperienceBullets = sourceBullets
       .slice(0, 6)
       .map((bullet): RewriteSuggestion => {
-        const insertedKeyword = keywordsForRewrite.find(
-          (keyword) => !this.includesKeyword(bullet, keyword),
+        const evidenceBackedKeywords = keywordsForRewrite.filter((keyword) =>
+          this.includesKeyword(bullet, keyword),
         );
-        const after = this.buildSuggestedRewriteAfter(bullet, insertedKeyword);
+        const after = this.buildSuggestedRewriteAfter(bullet);
         const sourceFactIds = this.findSourceFactIdsForText(factBase, bullet);
         const risk = this.assessRewriteRisk(
           bullet,
           after,
           sourceFactIds,
-          insertedKeyword,
+          undefined,
         );
 
         return {
           before: bullet,
           after,
-          reason: insertedKeyword
-            ? `补齐目标 JD 中的 ${insertedKeyword} 表达，但只基于原简历已有经历改写。`
-            : '保留原始事实，仅压缩表达并前置与 JD 更相关的信息。',
+          reason:
+            evidenceBackedKeywords.length > 0
+              ? `保留原始事实，并突出已有证据中的 ${evidenceBackedKeywords.join('、')}。`
+              : '保留原始事实，仅做格式清理。',
           evidence: bullet,
           sourceFactIds,
           ...risk,
@@ -1661,10 +1800,8 @@ export class ResumeService {
       skillsToEmphasize: matchedKeywords.slice(0, 10),
       sourceFacts,
       finalResumeMarkdown: this.buildFinalResumeMarkdown(
-        jd,
-        tailoredSummary,
+        resume,
         rewrittenExperienceBullets,
-        matchedKeywords,
       ),
       modificationReasons,
     };
@@ -1674,23 +1811,12 @@ export class ResumeService {
       jd,
       matchedKeywords,
       sourceFacts,
+      resume,
     );
   }
 
-  private buildSuggestedRewriteAfter(
-    bullet: string,
-    insertedKeyword: string | undefined,
-  ): string {
-    const cleanBullet = this.stripBulletPrefix(bullet).replace(
-      /[。；;,.，、]+$/u,
-      '',
-    );
-
-    if (!insertedKeyword) {
-      return cleanBullet;
-    }
-
-    return `${cleanBullet}，可支撑目标岗位对 ${insertedKeyword} 相关能力的要求。`;
+  private buildSuggestedRewriteAfter(bullet: string): string {
+    return this.stripBulletPrefix(bullet).replace(/[。；;,.，、]+$/u, '');
   }
 
   private async refineRewriteWithModel(
@@ -1698,6 +1824,7 @@ export class ResumeService {
     jd: ParsedJobDescription,
     matchedKeywords: string[],
     sourceFacts: SourceFactReference[],
+    resume: ParsedResume,
   ): Promise<ResumeCustomizeResponse['rewrite']> {
     const apiKey = process.env.DEEPSEEK_API_KEY?.trim();
     if (!apiKey || baseRewrite.rewrittenExperienceBullets.length === 0) {
@@ -1718,16 +1845,30 @@ export class ResumeService {
     const tailoredSummary =
       this.pickStringArray(modelOutput.tailoredSummary, 4) ??
       baseRewrite.tailoredSummary;
-    const skillsToEmphasize = this.unique([
-      ...(this.pickStringArray(modelOutput.skillsToEmphasize, 10) ?? []),
-      ...baseRewrite.skillsToEmphasize,
-    ]).slice(0, 10);
+    const skillsToEmphasize = this.keepEvidenceBackedSkillOrder(
+      this.pickStringArray(modelOutput.skillsToEmphasize, 10) ?? [],
+      baseRewrite.skillsToEmphasize,
+    );
     const modelBullets = modelOutput.rewrittenExperienceBullets ?? [];
+    const modelBulletsByFactId = new Map(
+      modelBullets.map((bullet) => [bullet.sourceFactId, bullet] as const),
+    );
     const rewrittenExperienceBullets =
-      baseRewrite.rewrittenExperienceBullets.map((suggestion, index) => {
-        const modelBullet = modelBullets[index];
+      baseRewrite.rewrittenExperienceBullets.map((suggestion) => {
+        const modelBullet = suggestion.sourceFactIds
+          .map((factId) => modelBulletsByFactId.get(factId))
+          .find(Boolean);
+        const groundedModelRewrite =
+          modelBullet?.after &&
+          !this.isNonEvidenceLine(modelBullet.after) &&
+          this.isModelRewriteGrounded(
+            suggestion.before,
+            modelBullet.after,
+            suggestion.sourceFactIds,
+            sourceFacts,
+          );
         const after =
-          modelBullet?.after && !this.isNonEvidenceLine(modelBullet.after)
+          groundedModelRewrite && modelBullet
             ? modelBullet.after.trim()
             : suggestion.after;
         const risk = this.assessRewriteRisk(
@@ -1740,7 +1881,10 @@ export class ResumeService {
         return {
           ...suggestion,
           after,
-          reason: modelBullet?.reason?.trim() || suggestion.reason,
+          reason:
+            groundedModelRewrite && modelBullet?.reason?.trim()
+              ? modelBullet.reason.trim()
+              : suggestion.reason,
           ...risk,
         } satisfies RewriteSuggestion;
       });
@@ -1755,10 +1899,8 @@ export class ResumeService {
       rewrittenExperienceBullets,
       skillsToEmphasize,
       finalResumeMarkdown: this.buildFinalResumeMarkdown(
-        jd,
-        tailoredSummary,
+        resume,
         rewrittenExperienceBullets,
-        skillsToEmphasize,
       ),
       modificationReasons,
     };
@@ -1783,22 +1925,23 @@ export class ResumeService {
       },
       body: JSON.stringify({
         model,
-        temperature: 0.2,
+        temperature: 0.1,
         response_format: { type: 'json_object' },
         messages: [
           {
             role: 'system',
             content:
-              '你是严谨的中文简历编辑。只基于给定事实改写，不编造公司、时间、学历、指标或职责。输出必须是 JSON，不要 Markdown 代码块。',
+              '你是严谨的中文简历编辑。只改写逐条给出的经历事实，不编造或放大公司、角色、时间、学历、技能、指标、职责和项目结果。每条改写必须回传对应的 sourceFactId，不能重排事实。禁止输出“待补充”“建议”“可支撑目标岗位”等分析话术。输出必须是 JSON，不要 Markdown 代码块。',
           },
           {
             role: 'user',
             content: JSON.stringify({
-              task: '润色 JD 定向简历最终稿。保留事实边界，删除联系方式、个人抬头、组织身份碎片和技能列表碎片。',
+              task: '仅润色证据充分的经历 bullet；保留项目、组织、角色和事实边界，不生成整份简历。',
               outputSchema: {
                 tailoredSummary: ['string'],
                 rewrittenExperienceBullets: [
                   {
+                    sourceFactId: 'string',
                     after: 'string',
                     reason: 'string',
                   },
@@ -1807,8 +1950,14 @@ export class ResumeService {
                 modificationReasons: ['string'],
               },
               targetRole: jd.roleTitle,
-              jobDescription: jd.rawText.slice(0, 6000),
+              jobRequirements: jd.requirements.map((requirement) => ({
+                id: requirement.id,
+                text: requirement.text,
+                type: requirement.type,
+                keywords: requirement.keywords,
+              })),
               matchedKeywords,
+              allowedSkills: baseRewrite.skillsToEmphasize,
               sourceFacts,
               currentRewrite: {
                 tailoredSummary: baseRewrite.tailoredSummary,
@@ -1875,16 +2024,22 @@ export class ResumeService {
 
     return value
       .map((item): ModelRewriteBullet | null => {
-        if (!this.isRecord(item) || typeof item.after !== 'string') {
+        if (
+          !this.isRecord(item) ||
+          typeof item.sourceFactId !== 'string' ||
+          typeof item.after !== 'string'
+        ) {
           return null;
         }
 
+        const sourceFactId = item.sourceFactId.trim();
         const after = item.after.trim();
-        if (!after) {
+        if (!sourceFactId || !after) {
           return null;
         }
 
         return {
+          sourceFactId,
           after,
           reason:
             typeof item.reason === 'string' ? item.reason.trim() : undefined,
@@ -1910,6 +2065,96 @@ export class ResumeService {
 
   private isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  private keepEvidenceBackedSkillOrder(
+    modelSkills: string[],
+    allowedSkills: string[],
+  ): string[] {
+    const allowedByToken = new Map(
+      allowedSkills.map((skill) => [
+        this.normalizeComparisonToken(skill),
+        skill,
+      ]),
+    );
+    const orderedModelSkills = modelSkills
+      .map((skill) => allowedByToken.get(this.normalizeComparisonToken(skill)))
+      .filter((skill): skill is string => Boolean(skill));
+
+    return this.unique([...orderedModelSkills, ...allowedSkills]).slice(0, 10);
+  }
+
+  private isModelRewriteGrounded(
+    before: string,
+    after: string,
+    sourceFactIds: string[],
+    sourceFacts: SourceFactReference[],
+  ): boolean {
+    const linkedFacts = sourceFacts.filter((fact) =>
+      sourceFactIds.includes(fact.id),
+    );
+    if (linkedFacts.length === 0) {
+      return false;
+    }
+
+    if (/待补充|建议|可支撑|目标岗位|生成边界|人工审核/i.test(after)) {
+      return false;
+    }
+
+    const evidenceText = [
+      before,
+      ...linkedFacts.flatMap((fact) => [fact.detail, fact.evidence]),
+    ].join('\n');
+    const evidenceMetrics = new Set(evidenceText.match(METRIC_PATTERN) ?? []);
+    const hasNewMetric = (after.match(METRIC_PATTERN) ?? []).some(
+      (metric) => !evidenceMetrics.has(metric),
+    );
+    if (hasNewMetric) {
+      return false;
+    }
+
+    const allowedKeywords = new Set(
+      this.extractKeywords(evidenceText).map((keyword) =>
+        this.normalizeComparisonToken(keyword),
+      ),
+    );
+    const hasUnsupportedKeyword = this.extractKeywords(after).some(
+      (keyword) => !allowedKeywords.has(this.normalizeComparisonToken(keyword)),
+    );
+    if (hasUnsupportedKeyword) {
+      return false;
+    }
+
+    const unsupportedClaim = after.match(UNSUPPORTED_CLAIM_PATTERN)?.[0];
+    if (
+      unsupportedClaim &&
+      !this.includesKeyword(evidenceText, unsupportedClaim)
+    ) {
+      return false;
+    }
+
+    return this.characterBigramCoverage(evidenceText, after) >= 0.2;
+  }
+
+  private characterBigramCoverage(source: string, candidate: string): number {
+    const toBigrams = (value: string): Set<string> => {
+      const normalized = this.normalizeComparisonToken(value);
+      const bigrams = new Set<string>();
+      for (let index = 0; index < normalized.length - 1; index += 1) {
+        bigrams.add(normalized.slice(index, index + 2));
+      }
+      return bigrams;
+    };
+    const sourceBigrams = toBigrams(source);
+    const candidateBigrams = toBigrams(candidate);
+    if (candidateBigrams.size === 0) {
+      return 0;
+    }
+
+    const matched = Array.from(candidateBigrams).filter((bigram) =>
+      sourceBigrams.has(bigram),
+    ).length;
+    return matched / candidateBigrams.size;
   }
 
   private assessRewriteRisk(
@@ -2298,26 +2543,133 @@ export class ResumeService {
       .filter(Boolean);
   }
 
-  private toRequirementLines(text: string): string[] {
-    const lines = this.toLines(text)
-      .flatMap((line) => line.split(/(?<=[。；;])\s*/))
-      .map((line) => line.trim())
-      .filter((line) => line.length >= 8);
+  private toRequirementCandidates(text: string): JobRequirementCandidate[] {
+    const candidates: JobRequirementCandidate[] = [];
+    let activeType: JobRequirement['type'] | undefined;
 
-    return lines.length > 0 ? lines : [text];
+    for (const sourceLine of this.toLines(text)) {
+      if (this.isJobSectionBoundary(sourceLine)) {
+        activeType = undefined;
+        continue;
+      }
+
+      const section = this.extractJobSection(sourceLine);
+      if (section) {
+        activeType = section.type;
+        if (!section.content) {
+          continue;
+        }
+      }
+
+      const content = section?.content ?? sourceLine;
+      for (const fragment of this.splitRequirementFragments(content)) {
+        const cleanLine = this.stripBulletPrefix(fragment);
+
+        if (!this.isJobRequirementCandidate(cleanLine, Boolean(activeType))) {
+          continue;
+        }
+
+        candidates.push({
+          text: cleanLine,
+          typeHint: activeType,
+        });
+      }
+    }
+
+    return candidates.filter((candidate, index, all) => {
+      const normalized = this.normalizeComparisonToken(candidate.text);
+      return (
+        normalized.length > 0 &&
+        all.findIndex(
+          (item) => this.normalizeComparisonToken(item.text) === normalized,
+        ) === index
+      );
+    });
   }
 
-  private detectRequirementType(text: string): JobRequirement['type'] {
+  private extractJobSection(
+    line: string,
+  ): { type: JobRequirement['type']; content: string } | null {
+    const match = line.match(
+      /^(?<heading>岗位职责|职位职责|工作职责|主要职责|职责描述|任职要求|职位要求|岗位要求|基本要求|任职资格|职位资格|申请条件|最低要求|加分项|优先条件|优先资格|responsibilities?|what you(?:'|’)ll do|what you will do|your impact|requirements?|qualifications?|minimum qualifications?|what we(?:'|’)re looking for|who you are|you have|preferred qualifications?|nice to have)\s*(?:[:：]|[-—–]\s*)?(?<content>.*)$/i,
+    );
+    const heading = match?.groups?.heading?.trim();
+    if (!heading) {
+      return null;
+    }
+
+    const type: JobRequirement['type'] =
+      /加分|优先|preferred|nice to have/i.test(heading)
+        ? 'preferred'
+        : /职责|responsib|what you(?:'|’)ll do|what you will do|your impact/i.test(
+              heading,
+            )
+          ? 'responsibility'
+          : 'required';
+
+    return {
+      type,
+      content: match?.groups?.content?.trim() ?? '',
+    };
+  }
+
+  private splitRequirementFragments(line: string): string[] {
+    return line
+      .replace(/\s+(?=(?:\d+[).、]|[（(]\d+[）)])\s*)/g, '\n')
+      .split(/\n|(?<=[。；;])\s*/)
+      .map((fragment) => fragment.trim())
+      .filter(Boolean);
+  }
+
+  private isJobSectionBoundary(line: string): boolean {
+    return (
+      JD_NOISE_PATTERN.test(line) ||
+      JD_SECTION_BOUNDARY_PATTERN.test(line) ||
+      /^(?:福利待遇|薪资福利|我们提供|公司介绍|团队介绍|为什么加入我们|工作地点|申请方式|招聘流程|其他信息|benefits?|our benefits|employee benefits|what we offer|why (?:join us|binance)|working at binance|about (?:us|binance|the company|the team)|compensation|location|how to apply|equal opportunity)\s*[:：]/i.test(
+        line,
+      )
+    );
+  }
+
+  private isJobRequirementCandidate(
+    line: string,
+    insideRequirementSection: boolean,
+  ): boolean {
+    if (line.length < 8 || line.length > 500) {
+      return false;
+    }
+
+    if (
+      JD_NOISE_PATTERN.test(line) ||
+      this.isJobSectionBoundary(line) ||
+      /^(?:岗位|职位|招聘|公司|企业|雇主|department|team|company|job title)\s*[:：]/i.test(
+        line,
+      )
+    ) {
+      return false;
+    }
+
+    return insideRequirementSection || JD_REQUIREMENT_SIGNAL_PATTERN.test(line);
+  }
+
+  private detectRequirementType(
+    text: string,
+    typeHint?: JobRequirement['type'],
+  ): JobRequirement['type'] {
     if (/优先|加分|preferred|plus/i.test(text)) {
       return 'preferred';
     }
 
-    if (/负责|职责|推动|设计|搭建|实现|responsib/i.test(text)) {
-      return 'responsibility';
-    }
-
     if (/要求|必须|熟悉|掌握|具备|经验|required|must/i.test(text)) {
       return 'required';
+    }
+
+    if (typeHint) {
+      return typeHint;
+    }
+
+    if (/负责|职责|推动|设计|搭建|实现|responsib/i.test(text)) {
+      return 'responsibility';
     }
 
     return 'other';
@@ -2348,12 +2700,25 @@ export class ResumeService {
   }
 
   private extractResumeBullets(lines: string[]): string[] {
-    return this.unique(
+    const candidates = this.unique(
       lines
         .map((line) => this.stripBulletPrefix(line))
-        .filter((line) => this.isSafeRewriteCandidate(line))
-        .slice(0, 12),
+        .filter((line) => this.isSafeRewriteCandidate(line)),
     );
+    const normalizedCandidates = candidates.map((line) =>
+      this.normalizeResumeLineForComparison(line),
+    );
+
+    return candidates
+      .filter(
+        (_, index) =>
+          !this.isContainedExperienceDuplicate(
+            normalizedCandidates[index] ?? '',
+            index,
+            normalizedCandidates,
+          ),
+      )
+      .slice(0, 12);
   }
 
   private isSafeRewriteCandidate(line: string): boolean {
@@ -2411,7 +2776,9 @@ export class ResumeService {
     const known = KNOWN_KEYWORDS.filter((keyword) =>
       this.includesKeyword(text, keyword),
     );
-    const acronyms = text.match(/\b[A-Z][A-Z0-9+/#.-]{1,12}\b/g) ?? [];
+    const acronyms = (text.match(/\b[A-Z][A-Z0-9+/#.-]{1,12}\b/g) ?? []).filter(
+      (keyword) => !KEYWORD_STOPWORDS.has(keyword.toUpperCase()),
+    );
     const chineseTerms =
       text.match(
         /[\u4e00-\u9fa5A-Za-z0-9./#+-]{2,12}(?:分析|设计|开发|管理|协作|测试|优化|增长|部署|评估|改写|校验)/g,
@@ -2496,24 +2863,99 @@ export class ResumeService {
   }
 
   private buildFinalResumeMarkdown(
-    jd: ParsedJobDescription,
-    tailoredSummary: string[],
+    resume: ParsedResume,
     rewrittenExperienceBullets: RewriteSuggestion[],
-    matchedKeywords: string[],
   ): string {
-    const summary = tailoredSummary.map((line) => `- ${line}`).join('\n');
-    const bullets =
-      rewrittenExperienceBullets.length > 0
-        ? rewrittenExperienceBullets
-            .map((suggestion) => `- ${suggestion.after}`)
-            .join('\n')
-        : '- 暂无可安全改写的经历，请先补充真实项目材料。';
-    const skills =
-      matchedKeywords.length > 0
-        ? matchedKeywords.map((keyword) => `\`${keyword}\``).join(' ')
-        : '待补充';
+    const replacements = new Map(
+      rewrittenExperienceBullets
+        .filter(
+          (suggestion) =>
+            suggestion.acceptedByDefault &&
+            suggestion.riskLevel === 'low' &&
+            suggestion.after.trim().length > 0,
+        )
+        .map((suggestion) => [
+          this.normalizeResumeLineForComparison(suggestion.before),
+          suggestion.after.trim(),
+        ]),
+    );
+    const rawLines = resume.rawText.split('\n');
+    const experienceComparisonKeys = new Set(
+      resume.sections.experience
+        .map((line) => this.stripBulletPrefix(line))
+        .filter((line) => line.length >= 16 && !this.isNonEvidenceLine(line))
+        .map((line) => this.normalizeResumeLineForComparison(line)),
+    );
+    const normalizedExperienceLines = rawLines.map((line) => {
+      const cleanLine = this.stripBulletPrefix(line.trim());
+      const comparisonKey = this.normalizeResumeLineForComparison(cleanLine);
+      return experienceComparisonKeys.has(comparisonKey) ||
+        (experienceComparisonKeys.size === 0 &&
+          this.isSafeRewriteCandidate(cleanLine))
+        ? comparisonKey
+        : '';
+    });
+    const usedReplacements = new Set<string>();
+    const finalLines = rawLines.flatMap((line, index) => {
+      const comparisonKey = normalizedExperienceLines[index] ?? '';
+      if (
+        comparisonKey &&
+        this.isContainedExperienceDuplicate(
+          comparisonKey,
+          index,
+          normalizedExperienceLines,
+        )
+      ) {
+        return [];
+      }
 
-    return `# ${jd.roleTitle} 简历定制版\n\n## 资料概览\n- 目标岗位：${jd.roleTitle}\n- 生成边界：以下内容仅基于已提交简历和补充信息生成；无法证明的能力保留为待补充项。\n\n## 岗位匹配摘要\n${summary}\n\n## 重点经历改写\n${bullets}\n\n## 建议强调技能\n${skills}\n\n## 人工审核提示\n- 导出前确认项目名称、时间范围、职责边界和数字成果均真实准确。\n- 对“待补充”或高风险项先补充事实，再纳入最终投递版本。\n`;
+      const replacement = replacements.get(comparisonKey);
+      if (!replacement || usedReplacements.has(comparisonKey)) {
+        return [line];
+      }
+
+      usedReplacements.add(comparisonKey);
+      const prefix =
+        line.match(/^\s*(?:(?:[-*•·]|\d+[).、]|[（(]?\d+[）)])\s*)/u)?.[0] ??
+        '';
+      return [`${prefix}${replacement}`];
+    });
+
+    return `${this.normalizeText(finalLines.join('\n'))}\n`;
+  }
+
+  private normalizeResumeLineForComparison(value: string): string {
+    return this.stripBulletPrefix(value)
+      .replace(/[\s。；;,.，、]+/gu, '')
+      .toLowerCase();
+  }
+
+  private isContainedExperienceDuplicate(
+    candidate: string,
+    candidateIndex: number,
+    allCandidates: string[],
+  ): boolean {
+    if (candidate.length < 20) {
+      return false;
+    }
+
+    return allCandidates.some((other, otherIndex) => {
+      if (
+        !other ||
+        otherIndex === candidateIndex ||
+        other.length < candidate.length
+      ) {
+        return false;
+      }
+
+      if (other === candidate) {
+        return otherIndex < candidateIndex;
+      }
+
+      return (
+        other.includes(candidate) && candidate.length / other.length >= 0.6
+      );
+    });
   }
 
   private stripBulletPrefix(value: string): string {
