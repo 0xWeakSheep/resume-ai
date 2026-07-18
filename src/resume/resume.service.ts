@@ -323,6 +323,21 @@ export class ResumeService {
   private async resolveResumeText(
     request: ResumeCustomizeRequest,
   ): Promise<{ text: string; sourceType: ParsedResume['sourceType'] }> {
+    const file = request.resume?.file;
+    if (file) {
+      const fileKind = this.detectFileKind(file);
+      const buffer = this.decodeBase64(file.dataBase64);
+      if (buffer.length > MAX_FILE_BYTES) {
+        throw new BadRequestException('Resume file must be smaller than 4MB.');
+      }
+
+      const parsedText = await this.extractTextFromFile(fileKind, buffer);
+      return {
+        text: this.requireUsefulText(parsedText, 'resume.file'),
+        sourceType: fileKind,
+      };
+    }
+
     const text = this.normalizeText(request.resume?.text ?? '');
     if (text.length > 0) {
       return {
@@ -331,24 +346,9 @@ export class ResumeService {
       };
     }
 
-    const file = request.resume?.file;
-    if (!file) {
-      throw new BadRequestException(
-        'Either resume.text or resume.file is required.',
-      );
-    }
-
-    const fileKind = this.detectFileKind(file);
-    const buffer = this.decodeBase64(file.dataBase64);
-    if (buffer.length > MAX_FILE_BYTES) {
-      throw new BadRequestException('Resume file must be smaller than 4MB.');
-    }
-
-    const parsedText = await this.extractTextFromFile(fileKind, buffer);
-    return {
-      text: this.requireUsefulText(parsedText, 'resume.file'),
-      sourceType: fileKind,
-    };
+    throw new BadRequestException(
+      'Either resume.file or resume.text is required.',
+    );
   }
 
   private detectFileKind(file: UploadedResumeFile): ResumeFileKind {

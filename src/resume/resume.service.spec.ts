@@ -114,6 +114,36 @@ describe('ResumeService', () => {
     );
   });
 
+  it('uses uploaded resume file before resume text when both exist', async () => {
+    const fileResume = `
+李四
+数据产品经理
+
+项目经历
+- 负责数据分析平台需求设计，推动 SQL 指标看板上线，支持业务团队复盘增长实验。
+
+教育经历
+某某大学 本科 统计学
+
+核心能力
+数据分析 / SQL / 增长实验 / 产品设计
+`;
+    const result = await service.extractFacts({
+      resume: {
+        text: SAMPLE_RESUME,
+        file: {
+          name: 'resume.txt',
+          mimeType: 'text/plain',
+          dataBase64: Buffer.from(fileResume, 'utf8').toString('base64'),
+        },
+      },
+    });
+
+    expect(result.parsedResume.sourceType).toBe('text');
+    expect(result.parsedResume.rawText).toContain('李四');
+    expect(result.parsedResume.rawText).not.toContain('张三');
+  });
+
   it('standardizes multiple JD sources and isolates failures', async () => {
     const result = await service.standardizeJobs({
       jobDescriptions: [
